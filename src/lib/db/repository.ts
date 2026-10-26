@@ -599,15 +599,44 @@ class Repository {
   // QUESTIONS & QUIZZES
   // --------------------------------------------------------------------------
 
-  async saveQuestions(questions: Omit<GeneratedQuestion, 'id' | 'createdAt'>[]): Promise<GeneratedQuestion[]> {
+  async saveQuestions(
+    questions: (Omit<GeneratedQuestion, 'id' | 'createdAt'> & { id?: string; createdAt?: string })[]
+  ): Promise<GeneratedQuestion[]> {
     const store = this.loadStore();
     const saved: GeneratedQuestion[] = questions.map((q) => ({
       ...q,
-      id: crypto.randomUUID(),
-      createdAt: new Date().toISOString(),
+      id: q.id || crypto.randomUUID(),
+      createdAt: q.createdAt || new Date().toISOString(),
     }));
     store.questions.push(...saved);
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          const rows = saved.map((q) => ({
+            id: q.id,
+            user_id: q.userId,
+            subject_id: q.subjectId,
+            topic_id: q.topicId,
+            question_text: q.questionText,
+            question_type: q.questionType,
+            difficulty: q.difficulty,
+            options: q.options,
+            correct_answer: q.correctAnswer,
+            rubric: q.rubric,
+            explanation: q.explanation,
+            citation_metadata: q.citationMetadata || [],
+            is_flagged: q.isFlagged || false,
+          }));
+          await supabase.from('generated_questions').insert(rows);
+        } catch (err) {
+          console.warn('Failed to insert questions into Supabase:', err);
+        }
+      }
+    }
+
     return saved;
   }
 
@@ -640,20 +669,133 @@ class Repository {
       questionCount: data.questionCount,
       status: 'ready',
       topicIds: data.topicIds,
+      questionIds: data.questionIds,
       createdAt: new Date().toISOString(),
     };
     store.quizzes.push(quiz);
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          await supabase.from('quizzes').insert({
+            id: quiz.id,
+            user_id: userId,
+            subject_id: data.subjectId,
+            title: data.title,
+            question_count: data.questionCount,
+            status: 'ready',
+          });
+
+          if (data.questionIds && data.questionIds.length > 0) {
+            const linkRows = data.questionIds.map((qid, idx) => ({
+              quiz_id: quiz.id,
+              question_id: qid,
+              order_index: idx,
+            }));
+            await supabase.from('quiz_questions').insert(linkRows);
+          }
+        } catch (err) {
+          console.warn('Failed to insert quiz into Supabase:', err);
+        }
+      }
+    }
+
     return quiz;
   }
 
   async getQuizById(userId: string, id: string): Promise<Quiz | null> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          const { data: dbQuiz } = await supabase
+            .from('quizzes')
+            .select('*')
+            .eq('id', id)
+            .eq('user_id', userId)
+            .single();
+
+          if (dbQuiz) {
+            const { data: links } = await supabase
+              .from('quiz_questions')
+              .select('question_id, order_index')
+              .eq('quiz_id', id)
+              .order('order_index', { ascending: true });
+
+            const questionIds = (links || []).map((l: any) => l.question_id);
+            let questions: GeneratedQuestion[] = [];
+
+            if (questionIds.length > 0) {
+              const { data: qRows } = await supabase
+                .from('generated_questions')
+                .select('*')
+                .in('id', questionIds)
+                .eq('user_id', userId);
+
+              if (qRows) {
+                const qMap = new Map(
+                  qRows.map((q: any) => [
+                    q.id,
+                    {
+                      id: q.id,
+                      userId: q.user_id,
+                      subjectId: q.subject_id,
+                      topicId: q.topic_id,
+                      questionText: q.question_text,
+                      questionType: q.question_type,
+                      difficulty: q.difficulty,
+                      options: q.options,
+                      correctAnswer: q.correct_answer,
+                      rubric: q.rubric,
+                      explanation: q.explanation,
+                      citationMetadata: q.citation_metadata || [],
+                      isFlagged: q.is_flagged,
+                      createdAt: q.created_at,
+                    },
+                  ])
+                );
+                questions = questionIds.map((qid: string) => qMap.get(qid)).filter(Boolean) as GeneratedQuestion[];
+              }
+            }
+
+            return {
+              id: dbQuiz.id,
+              userId: dbQuiz.user_id,
+              subjectId: dbQuiz.subject_id,
+              title: dbQuiz.title,
+              questionCount: dbQuiz.question_count,
+              status: dbQuiz.status,
+              topicIds: [],
+              questionIds,
+              createdAt: dbQuiz.created_at,
+              questions,
+            };
+          }
+        } catch {
+          // fallback to local store
+        }
+      }
+    }
+
     const store = this.loadStore();
     const quiz = store.quizzes.find((q) => q.id === id && q.userId === userId);
     if (!quiz) return null;
 
-    // Attach questions (note: when serving to client, correct answers are stripped unless attempt is completed)
-    const questions = store.questions.filter((q) => q.userId === userId && quiz.topicIds.includes(q.topicId));
+    // Attach questions: prefer exact questionIds if available, otherwise fallback to topic-based filter
+    let questions: GeneratedQuestion[] = [];
+    if (quiz.questionIds && quiz.questionIds.length > 0) {
+      questions = quiz.questionIds
+        .map((qid) => store.questions.find((q) => q.id === qid && q.userId === userId))
+        .filter((q): q is GeneratedQuestion => Boolean(q));
+    }
+    if (questions.length === 0) {
+      questions = store.questions
+        .filter((q) => q.userId === userId && quiz.topicIds.includes(q.topicId))
+        .slice(0, quiz.questionCount);
+    }
+
     return {
       ...quiz,
       questions,

@@ -27,23 +27,32 @@ export function Navbar({
 
   const isDemoUser = user?.email === 'demo.student@gapfinder.ai';
 
+  // Reset loading flags whenever the user identity changes (e.g. after navigation)
+  useEffect(() => {
+    setIsLoggingOut(false);
+    setIsExitingDemo(false);
+  }, [user?.id, user?.email]);
+
   const handleLogout = async () => {
+    if (isLoggingOut) return; // guard against double-clicks
     setIsLoggingOut(true);
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
-      router.push('/login');
-      router.refresh();
+      // Hard navigation to fully reset React state, auth tokens, and component caches
+      window.location.href = '/login';
     } catch {
       setIsLoggingOut(false);
     }
   };
 
   const handleExitDemo = async () => {
+    if (isExitingDemo) return; // guard against double-clicks
     setIsExitingDemo(true);
     try {
-      await fetch('/api/auth/demo', { method: 'DELETE' });
-      router.push('/dashboard');
-      router.refresh();
+      const res = await fetch('/api/auth/demo', { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      // Hard navigation to fully reset demo state in React tree
+      window.location.href = data.destination || '/';
     } catch {
       setIsExitingDemo(false);
     }

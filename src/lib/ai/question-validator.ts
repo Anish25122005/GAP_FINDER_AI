@@ -51,6 +51,13 @@ export function validateQuestion(question: Partial<GeneratedQuestion>): Validati
           errors.push('MCQ option appears to contain question prompt or lecture preamble instead of a concise answer choice.');
         }
 
+        // Check for generic robotic boilerplate distractors
+        if (
+          /\b(?:external monitoring layer|unrelated to.*principles|without automated rule checks|superseded by unvalidated assumptions|alternative aspect of|alternative model \d|sequential validation of .* without parallel)\b/i.test(trimmed)
+        ) {
+          errors.push('MCQ option contains generic boilerplate distractor rather than an academically plausible domain concept.');
+        }
+
         // Check if option accidentally contains explanation phrasing or copies the entire explanation
         if (/^(explanation|as stated in|as verified in|this is because)\b/i.test(trimmed)) {
           errors.push('MCQ option contains explanatory preamble instead of a concise answer choice.');
@@ -58,6 +65,15 @@ export function validateQuestion(question: Partial<GeneratedQuestion>): Validati
         if (question.explanation && trimmed.length > 50 && trimmed.toLowerCase().includes(question.explanation.toLowerCase())) {
           errors.push('MCQ option contains explanatory source text instead of an answer choice.');
         }
+      }
+
+      // Check for generic unvaried question stems
+      if (
+        /^according to the course notes on .*, what is the primary function or principle described\??$/i.test(
+          question.questionText!.trim()
+        )
+      ) {
+        errors.push('Question uses an unvaried generic template stem. Stems must reflect specific mechanisms, comparisons, or conditions.');
       }
 
       // Check that correct answer exactly matches one of the options

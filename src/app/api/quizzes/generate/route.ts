@@ -71,22 +71,36 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
-      // Check existing question bank first to avoid redundant generation
-      const existing = await repository.getQuestionsByTopic(auth.user.id, topic.id);
-      if (existing.length >= perTopic) {
-        allGeneratedQuestions.push(...existing.slice(0, perTopic));
-      } else {
-        const needed = perTopic - existing.length;
-        allGeneratedQuestions.push(...existing);
-        const newlyGenerated = await generateQuestionsForTopic({
-          userId: auth.user.id,
-          subjectId,
-          topic,
-          chunks,
-          count: needed,
-          preferType: 'mixed',
-        });
-        allGeneratedQuestions.push(...newlyGenerated);
+      // Always generate fresh grounded questions for the requested diagnostic assessment
+      const newlyGenerated = await generateQuestionsForTopic({
+        userId: auth.user.id,
+        subjectId,
+        topic,
+        chunks,
+        count: perTopic,
+        preferType: 'mixed',
+      });
+
+      // Avoid duplicate question text within the current quiz
+      const existingTexts = new Set(allGeneratedQuestions.map((q) => q.questionText.trim().toLowerCase()));
+      const uniqueNewlyGenerated = newlyGenerated.filter(
+        (q) => !existingTexts.has(q.questionText.trim().toLowerCase())
+      );
+      allGeneratedQuestions.push(...uniqueNewlyGenerated);
+
+      // If generator yielded fewer questions than needed, supplement with unused questions from question bank
+      if (uniqueNewlyGenerated.length < perTopic) {
+        const existing = await repository.getQuestionsByTopic(auth.user.id, topic.id);
+        const unused = existing.filter(
+          (eq) => !allGeneratedQuestions.some((aq) => aq.id === eq.id || aq.questionText.toLowerCase() === eq.questionText.toLowerCase())
+        );
+        // Shuffle unused to ensure variety across quizzes
+        for (let i = unused.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [unused[i], unused[j]] = [unused[j], unused[i]];
+        }
+        const needed = perTopic - uniqueNewlyGenerated.length;
+        allGeneratedQuestions.push(...unused.slice(0, needed));
       }
     }
 

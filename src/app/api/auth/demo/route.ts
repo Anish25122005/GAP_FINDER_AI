@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { repository } from '@/lib/db/repository';
-import { setSessionCookie, clearDemoModeCookie } from '@/lib/auth/session';
+import { setSessionCookie, clearDemoModeCookie, getCurrentUser } from '@/lib/auth/session';
 import { seedDemoSubjectForUser } from '@/lib/sample-data';
 
 export async function POST() {
@@ -45,7 +45,13 @@ export async function POST() {
 export async function DELETE() {
   try {
     await clearDemoModeCookie();
-    return NextResponse.json({ message: 'Exited demo mode successfully' });
+    const currentUser = await getCurrentUser();
+    const destination = currentUser ? '/dashboard' : '/login';
+    return NextResponse.json({
+      message: 'Exited demo mode successfully',
+      destination,
+      hasPersonalSession: Boolean(currentUser),
+    });
   } catch (err: any) {
     return NextResponse.json({ error: err.message || 'Failed to exit demo mode' }, { status: 500 });
   }

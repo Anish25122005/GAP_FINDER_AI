@@ -102,12 +102,29 @@ export async function setSessionCookie(user: UserProfile, isDemo = false) {
 
 export async function clearDemoModeCookie() {
   const cookieStore = await cookies();
+  cookieStore.set(DEMO_MODE_COOKIE_NAME, '', {
+    path: '/',
+    maxAge: 0,
+    expires: new Date(0),
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+  });
   cookieStore.delete(DEMO_MODE_COOKIE_NAME);
+
   const sessionToken = cookieStore.get(SESSION_COOKIE_NAME)?.value;
   if (sessionToken) {
     try {
       const sessionData = JSON.parse(Buffer.from(sessionToken, 'base64').toString('utf-8'));
       if (sessionData?.isDemo) {
+        cookieStore.set(SESSION_COOKIE_NAME, '', {
+          path: '/',
+          maxAge: 0,
+          expires: new Date(0),
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'lax',
+        });
         cookieStore.delete(SESSION_COOKIE_NAME);
       }
     } catch {
@@ -118,6 +135,22 @@ export async function clearDemoModeCookie() {
 
 export async function clearSessionCookie() {
   const cookieStore = await cookies();
+  cookieStore.set(SESSION_COOKIE_NAME, '', {
+    path: '/',
+    maxAge: 0,
+    expires: new Date(0),
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+  });
+  cookieStore.set(DEMO_MODE_COOKIE_NAME, '', {
+    path: '/',
+    maxAge: 0,
+    expires: new Date(0),
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+  });
   cookieStore.delete(SESSION_COOKIE_NAME);
   cookieStore.delete(DEMO_MODE_COOKIE_NAME);
 }

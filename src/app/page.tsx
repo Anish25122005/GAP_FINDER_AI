@@ -44,8 +44,8 @@ export default function LandingPage() {
     try {
       const res = await fetch('/api/auth/demo', { method: 'POST' });
       if (res.ok) {
-        router.push('/dashboard');
-        router.refresh();
+        // Hard navigation to fully load dashboard with demo session cookies
+        window.location.href = '/dashboard';
       } else {
         alert('Could not launch demo account. Please try registering or signing in.');
         setIsDemoLoading(false);
@@ -58,9 +58,10 @@ export default function LandingPage() {
   const handleExitDemo = async () => {
     setIsDemoLoading(true);
     try {
-      await fetch('/api/auth/demo', { method: 'DELETE' });
-      router.push('/dashboard');
-      router.refresh();
+      const res = await fetch('/api/auth/demo', { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      // Hard navigation to fully reset demo state
+      window.location.href = data.destination || '/';
     } catch {
       setIsDemoLoading(false);
     }

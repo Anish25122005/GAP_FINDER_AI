@@ -1,7 +1,7 @@
 import { aiProvider, sanitizeUntrustedContent } from './provider';
 import { generateEmbedding } from './embeddings';
 import { repository } from '@/lib/db/repository';
-import type { CitationMetadata, ChatMessage } from '@/lib/types';
+import type { CitationMetadata, ChatMessage, DocumentChunk } from '@/lib/types';
 
 export interface AssistantResponse {
   content: string;
@@ -10,8 +10,40 @@ export interface AssistantResponse {
   retrievedCount: number;
 }
 
+const STOP_WORDS = new Set([
+  'what', 'when', 'where', 'which', 'who', 'whom', 'whose', 'why', 'how',
+  'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+  'have', 'has', 'had', 'do', 'does', 'did', 'can', 'could', 'will', 'would',
+  'shall', 'should', 'may', 'might', 'must', 'and', 'or', 'but', 'if', 'because',
+  'as', 'until', 'while', 'of', 'at', 'by', 'for', 'with', 'about', 'against',
+  'between', 'into', 'through', 'during', 'before', 'after', 'above', 'below',
+  'to', 'from', 'up', 'down', 'in', 'out', 'on', 'off', 'over', 'under', 'again',
+  'further', 'then', 'once', 'here', 'there', 'all', 'any', 'both', 'each',
+  'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only',
+  'own', 'same', 'so', 'than', 'too', 'very', 'tell', 'explain', 'describe',
+  'according', 'notes', 'material', 'course', 'overview', 'definition'
+]);
+
+/**
+ * Computes a simple keyword overlap score between a query and a chunk,
+ * ignoring common stop words to prevent false-positive matches on function words.
+ */
+function keywordOverlapScore(query: string, chunkContent: string): number {
+  const normalize = (s: string) =>
+    s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+  const queryWords = normalize(query);
+  if (queryWords.length === 0) return 0;
+  const chunkText = chunkContent.toLowerCase();
+  let matched = 0;
+  for (const word of queryWords) {
+    if (chunkText.includes(word)) matched++;
+  }
+  return matched / queryWords.length;
+}
+
 /**
  * Answers questions strictly grounded in the student's uploaded learning material.
+ * Uses hybrid retrieval: vector cosine similarity + lexical keyword overlap.
  */
 export async function askTopicAssistant(
   userId: string,
@@ -21,26 +53,49 @@ export async function askTopicAssistant(
 ): Promise<AssistantResponse> {
   const sanitizedQuery = sanitizeUntrustedContent(userQuestion.trim());
 
-  // 1. Vector Retrieval
+  // 1. Vector Retrieval with low initial threshold
   const queryEmb = await generateEmbedding(sanitizedQuery);
-  const similarChunks = await repository.searchSimilarChunks(userId, queryEmb, {
+  const rawSimilarChunks = await repository.searchSimilarChunks(userId, queryEmb, {
     subjectId,
-    limit: 4,
-    threshold: 0.2,
+    limit: 8,
+    threshold: 0.01,
   });
 
-  // 2. Check for empty retrieval
-  if (similarChunks.length === 0) {
+  // 2. Candidate collection: combine vector matches or fallback to subject chunks
+  let candidates = rawSimilarChunks;
+  if (candidates.length === 0) {
+    const subjectChunks = await repository.getChunksBySubjectId(userId, subjectId);
+    candidates = subjectChunks.map((c) => ({ ...c, similarity: 0.01 }));
+  }
+
+  // 3. Strict confidence gating: reject chunks without meaningful keyword overlap or vector similarity
+  const scoredChunks = candidates
+    .map((chunk) => {
+      const kwScore = keywordOverlapScore(sanitizedQuery, chunk.content);
+      const hybridScore = chunk.similarity * 0.4 + kwScore * 0.6;
+      return { ...chunk, similarity: hybridScore, kwScore };
+    })
+    .filter((chunk) => {
+      // Must have either meaningful content keyword overlap (>= 0.20) or solid vector similarity (>= 0.035)
+      return chunk.kwScore >= 0.20 || (chunk.kwScore > 0 && chunk.similarity >= 0.035) || chunk.similarity >= 0.055;
+    })
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, 4);
+
+  // 4. Reject if no chunks pass the relevance confidence gate
+  if (scoredChunks.length === 0) {
     return {
       content:
-        'I searched your uploaded learning material for this subject, but found no relevant notes or sections addressing your question. Please ensure you have uploaded documents covering this topic in the Document Library.',
+        `Based on your uploaded learning material and course notes, I could not find information addressing "${sanitizedQuery}". My answers are strictly grounded in your notes to prevent hallucinations. Please make sure the relevant document or lecture notes are uploaded to the Document Library.`,
       citations: [],
       isGrounded: false,
       retrievedCount: 0,
     };
   }
 
-  // 3. Prepare retrieved context and citations
+  const similarChunks = scoredChunks;
+
+  // 5. Prepare retrieved context and citations
   const citations: CitationMetadata[] = similarChunks.map((c) => ({
     documentId: c.documentId,
     documentTitle: c.sectionTitle || 'Document Material',
@@ -105,3 +160,4 @@ Strict Grounding Rules:
     };
   }
 }
+

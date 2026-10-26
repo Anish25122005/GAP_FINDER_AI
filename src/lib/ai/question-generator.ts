@@ -73,6 +73,17 @@ export async function generateQuestionsForTopic(
     );
   }
 
+  // Fetch subject-wide chunks to provide a rich academic distractor pool
+  let allAvailableChunks = chunks;
+  try {
+    const subjectChunks = await repository.getChunksBySubjectId(userId, subjectId);
+    const existingIds = new Set(chunks.map((c) => c.id));
+    const additional = subjectChunks.filter((sc) => !existingIds.has(sc.id));
+    allAvailableChunks = [...chunks, ...additional];
+  } catch {
+    // fallback to provided chunks
+  }
+
   // Combine top chunks for prompt context
   const contextText = chunks
     .slice(0, 4)
@@ -82,7 +93,7 @@ export async function generateQuestionsForTopic(
   const sanitizedContext = sanitizeUntrustedContent(contextText);
 
   const prompt = `
-You are an expert diagnostic exam author. Generate ${count} diagnostic assessment questions for the syllabus topic: "${topic.name}".
+You are an expert academic diagnostic exam author. Generate ${count} rigorous diagnostic assessment questions for the syllabus topic: "${topic.name}".
 
 Context Material:
 <<<UNTRUSTED_RETRIEVED_CONTEXT>>>
@@ -92,87 +103,179 @@ ${sanitizedContext}
 Requirements:
 1. Every question MUST be strictly grounded in the facts presented in the retrieved context material above.
 2. Generate question types: ${preferType === 'mixed' ? 'A mix of multiple-choice (MCQ) and short-answer' : preferType}.
-3. For multiple-choice questions:
+3. Question stems MUST vary naturally. NEVER repeat generic template stems like "According to the course notes on X, what is the primary function or principle described?". Use varied inquiry angles:
+   - Mechanism / Operation (e.g. "How does [Mechanism] enforce [Property]?")
+   - Prerequisites / Conditions (e.g. "Under what circumstances does [Phenomenon] occur?")
+   - Distinction / Trade-offs (e.g. "What trade-off distinguishes [Approach A] from [Approach B]?")
+   - Purpose / Objective (e.g. "What primary issue is resolved by [Concept]?")
+4. For multiple-choice questions:
    - Provide exactly 4 distinct, plausible options.
-   - CRITICAL REQUIREMENT: Each option MUST be a concise phrase or short sentence under 15 words (maximum 120 characters).
+   - Each option MUST be a concise phrase or short sentence under 15 words (maximum 120 characters).
    - NEVER put entire paragraphs, textbook notes, student names, rhetorical questions, or explanatory text into an answer option.
-   - Keep the explanation and citation ONLY in the "explanation" and "citedExcerpt" fields, NEVER in the options.
    - Exactly one option must be strictly correct according to the context.
-   - Three options must be plausible distractors representing common student misconceptions.
+   - Three options must be plausible distractors representing genuine academic misconceptions, adjacent mechanisms from the subject area, or incorrect applications.
+   - NEVER create distractors by mechanically inserting the topic name into boilerplate sentences (e.g. DO NOT use "an external monitoring layer", "a static configuration unrelated to...", "a sequential validation without parallel...").
    - Do NOT always make the first option (Option A) the correct answer. Vary the correct option position.
-4. For short-answer questions:
+5. For short-answer questions:
    - Provide a concise reference answer.
    - List 2 to 4 key concepts required for grading.
-5. In "citedExcerpt", quote the exact 1-2 sentence evidence from the context that proves the answer.
-6. Provide a clear educational explanation of why the answer is correct and why common misconceptions fail.
-7. Return a JSON object with a "questions" array.
+6. In "citedExcerpt", quote the exact 1-2 sentence evidence from the context that proves the answer.
+7. Provide a clear educational explanation of why the answer is correct and why common misconceptions fail.
+8. Return a JSON object with a "questions" array.
 `;
 
   const fallbackGenerator = (): z.infer<typeof QuestionBatchSchema> => {
-    // Generate deterministic grounded questions directly from chunk content for offline/test environments
-    const firstChunk = chunks[0];
-    const excerpt = firstChunk.content.slice(0, 180).trim();
-
-    // Clean and split chunk into sentences/propositions
-    const cleanContent = firstChunk.content
-      .replace(/[\r\n]+/g, ' ')
-      .replace(/^(?:what\s+is|define|explain|overview\s+of|notes?\s+on)\s+[^?.:\n]+[?.:\n]+/i, '')
-      .replace(/^[A-Z][A-Za-z0-9\s_-]+:\s*/, '')
-      .trim();
-
-    const rawSentences = cleanContent
-      .split(/(?<=[.?!])\s+/)
-      .map((s) => s.trim().replace(/^[-*•\d.)\s]+/, ''))
-      .filter((s) => s.length > 15 && !/^(what is|who is|why does|example:)\b/i.test(s));
-
-    let candidateSentence = rawSentences[0] || `Foundational mechanism of ${topic.name}`;
-
-    // Ensure candidateSentence is a concise definition under 120 chars and under 18 words
-    if (candidateSentence.length > 120 || candidateSentence.split(/\s+/).length > 18) {
-      const clauseMatch = candidateSentence.match(/^([^,;:]+[,;:]?[^,;:]*)/);
-      if (clauseMatch && clauseMatch[1].length >= 20 && clauseMatch[1].length <= 120) {
-        candidateSentence = clauseMatch[1].trim();
-      } else {
-        const words = candidateSentence.split(/\s+/).slice(0, 14);
-        candidateSentence = words.join(' ');
-      }
+    // Collect all factual sentences from topic chunks first, then subject chunks
+    const allSentences: string[] = [];
+    for (const chunk of allAvailableChunks.slice(0, 8)) {
+      const cleanContent = chunk.content
+        .replace(/[\r\n]+/g, ' ')
+        .replace(/^(?:what\s+is|define|explain|overview\s+of|notes?\s+on)\s+[^?.:\n]+[?.:\n]+/i, '')
+        .replace(/^[A-Z][A-Za-z0-9\s_-]+:\s*/, '')
+        .trim();
+      const sentences = cleanContent
+        .split(/(?<=[.?!])\s+/)
+        .map((s) => s.trim().replace(/^[-*•\d.)\s]+/, ''))
+        .filter((s) => s.length > 15 && s.length < 140 && !/^(what is|who is|why does|example:)\b/i.test(s))
+        .filter((s) => !/^(?:[A-Z][a-z]+\s+(?:studies|researches|explores|reads|learns|attended|works|is a student)|(?:i|we|he|she|they|my|our)\b)/i.test(s))
+        .filter((s) => !/(?:studies at|is a student|enrolled in)\b/i.test(s));
+      allSentences.push(...sentences);
     }
-    const cleanCorrectAnswer = candidateSentence.trim().replace(/[.,;:]$/, '');
 
-    // Craft concise, plausible distractors (< 90 chars each)
-    const distractor1 = `An isolated subsystem operating without ${topic.name} integration`;
-    const distractor2 = `A deprecated procedure superseded by unvalidated assumptions`;
-    const distractor3 = `A manual verification method without automated rule checks`;
-
-    const rawOptions = [cleanCorrectAnswer, distractor1, distractor2, distractor3];
-    const { shuffledOptions, alignedCorrectAnswer } = shuffleOptionsAndAlignAnswer(rawOptions, cleanCorrectAnswer);
+    // Deduplicate and constrain length for concise options (< 120 chars, < 18 words)
+    const uniqueSentences = [...new Set(allSentences.map((s) => s.trim()))]
+      .map((s) => {
+        if (s.length > 120 || s.split(/\s+/).length > 18) {
+          const clauseMatch = s.match(/^([^,;:]+[,;:]?[^,;:]*)/);
+          if (clauseMatch && clauseMatch[1].length >= 20 && clauseMatch[1].length <= 120) {
+            return clauseMatch[1].trim().replace(/[.,;:]$/, '');
+          }
+          return s.split(/\s+/).slice(0, 14).join(' ');
+        }
+        return s.replace(/[.,;:]$/, '');
+      })
+      .filter((s) => s.length >= 15);
 
     const questions: z.infer<typeof GeneratedQuestionSchema>[] = [];
+    const usedStems = new Set<string>();
 
-    // 1. MCQ
-    questions.push({
-      questionText: `According to the course notes on ${topic.name}, what is the primary function or principle described?`,
-      questionType: 'mcq',
-      difficulty: 'medium',
-      options: shuffledOptions,
-      correctAnswer: alignedCorrectAnswer,
-      explanation: `As verified in the course materials: "${excerpt}...", this represents the primary grounded definition.`,
-      citedExcerpt: excerpt,
-    });
+    // Helper to generate a question for a given sentence and index
+    const buildQuestionForIndex = (qIdx: number): z.infer<typeof GeneratedQuestionSchema> | null => {
+      const sentence = uniqueSentences[qIdx % Math.max(1, uniqueSentences.length)] || `Core foundational mechanism of ${topic.name}`;
+      const cleanCorrectAnswer = sentence.trim().replace(/[.,;:]$/, '');
+      const chunkForCitation = chunks[qIdx % chunks.length] || chunks[0];
+      const excerpt = chunkForCitation.content.slice(0, 180).trim();
 
-    // 2. Short Answer if requested
+      // Extract subject/concept from sentence if possible
+      const conceptMatch = sentence.match(/^((?:The\s+|An?\s+)?(?:[A-Z][A-Za-z0-9_-]*(?:\s+[A-Za-z0-9_-]+){0,2}))\s+(?:is|are|solves?|provides?|occurs?|assumes?|ensures?|guarantees?|uses?|translates?|requires?|asserts?|implements?)\b/i);
+      const conceptName = conceptMatch ? conceptMatch[1].trim() : topic.name;
+
+      // Natural, non-formulaic question stems varied by inquiry angle
+      const stemTemplates = [
+        `Which operational mechanism or principle is attributed to ${conceptName} in the course material?`,
+        `What primary function or guarantee does ${conceptName} provide within ${topic.name}?`,
+        `How does ${conceptName} operate according to the authoritative notes?`,
+        `Under what condition or technical requirement does ${conceptName} apply?`,
+      ];
+      let stem = stemTemplates[qIdx % stemTemplates.length];
+      if (usedStems.has(stem)) {
+        stem = `In the context of ${topic.name}, which statement accurately describes the role of ${conceptName}?`;
+      }
+      usedStems.add(stem);
+
+      // Collect real academic distractors from other sentences in the material
+      const pool = uniqueSentences.filter(
+        (s) => s.toLowerCase() !== cleanCorrectAnswer.toLowerCase() && s.length >= 15 && s.length <= 120
+      );
+
+      const distractors: string[] = [];
+      const usedLower = new Set([cleanCorrectAnswer.toLowerCase()]);
+
+      for (const cand of pool) {
+        if (distractors.length >= 3) break;
+        const low = cand.toLowerCase();
+        if (!usedLower.has(low)) {
+          usedLower.add(low);
+          distractors.push(cand);
+        }
+      }
+
+      // Domain-specific plausible alternative mechanisms if material has few sentences
+      const domainContrastingMechanisms = [
+        'Coordinates execution using centralized polling rather than distributed consensus',
+        'Operates asynchronously without state verification or consistency guarantees',
+        'Applies static pre-allocation bypassing runtime dynamic requirements',
+        'Relies on unverified client-side caching without authoritative validation',
+        'Executes sequential scans lacking indexed lookup or hashing structures',
+        'Permits concurrent unsynchronized execution across shared memory addresses',
+      ];
+
+      for (const alt of domainContrastingMechanisms) {
+        if (distractors.length >= 3) break;
+        const low = alt.toLowerCase();
+        if (!usedLower.has(low)) {
+          usedLower.add(low);
+          distractors.push(alt);
+        }
+      }
+
+      if (distractors.length < 3) {
+        return null; // Cannot support 4 valid options without fabrication
+      }
+
+      const rawOptions = [cleanCorrectAnswer, ...distractors.slice(0, 3)];
+      const { shuffledOptions, alignedCorrectAnswer } = shuffleOptionsAndAlignAnswer(rawOptions, cleanCorrectAnswer);
+
+      return {
+        questionText: stem,
+        questionType: 'mcq',
+        difficulty: qIdx % 3 === 0 ? 'medium' : qIdx % 3 === 1 ? 'hard' : 'easy',
+        options: shuffledOptions,
+        correctAnswer: alignedCorrectAnswer,
+        explanation: `As verified in the course materials: "${excerpt}...", this represents the grounded academic mechanism.`,
+        citedExcerpt: excerpt,
+      };
+    };
+
+    // 1. First question: MCQ
+    const firstMcq = buildQuestionForIndex(0);
+    if (firstMcq) {
+      questions.push(firstMcq);
+    }
+
+    // 2. Short answer if count > 1
     if (count > 1) {
-      const secondCandidate = rawSentences[1] || `Key concepts include structured analysis and evidence evaluation.`;
+      const secondCandidate = uniqueSentences[1] || uniqueSentences[0] || `Key concepts include structured analysis and evidence evaluation.`;
       const secondExcerpt = secondCandidate.slice(0, 120).trim();
       questions.push({
-        questionText: `Explain how ${topic.name} is implemented and identify its key considerations based on your course notes.`,
+        questionText: `Explain the technical mechanism of ${topic.name} and describe its key operational considerations based on your course notes.`,
         questionType: 'short_answer',
         difficulty: 'medium',
         correctAnswer: secondExcerpt,
         explanation: `Course text states: "${secondExcerpt}". A complete response must address this core mechanism.`,
-        keyConcepts: [topic.name, 'Implementation considerations', 'Core mechanism'],
+        keyConcepts: [topic.name, 'Operational considerations', 'Core mechanism'],
         citedExcerpt: secondExcerpt,
       });
+    }
+
+    // 3. Additional questions if count >= 3
+    for (let i = 2; i < count; i++) {
+      if (preferType === 'short_answer' || (preferType === 'mixed' && i % 2 === 1)) {
+        const sentence = uniqueSentences[i % Math.max(1, uniqueSentences.length)] || `Operational guarantee of ${topic.name}`;
+        const excerpt = sentence.slice(0, 120).trim();
+        questions.push({
+          questionText: `Describe how ${topic.name} addresses system trade-offs or constraints discussed in the notes.`,
+          questionType: 'short_answer',
+          difficulty: 'hard',
+          correctAnswer: excerpt,
+          explanation: `Course materials indicate: "${excerpt}..."`,
+          keyConcepts: [topic.name, 'Trade-offs', 'Constraints'],
+          citedExcerpt: excerpt,
+        });
+      } else {
+        const mcq = buildQuestionForIndex(i);
+        if (mcq) questions.push(mcq);
+      }
     }
 
     return { questions };

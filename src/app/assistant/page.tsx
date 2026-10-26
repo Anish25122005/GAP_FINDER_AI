@@ -91,6 +91,7 @@ export default function AssistantPage() {
   }, [messages]);
 
   const handleSendMessage = async (queryToSend?: string) => {
+    if (isLoading) return;
     const q = (queryToSend || inputQuery).trim();
     if (!q || !selectedSubjectId) return;
 

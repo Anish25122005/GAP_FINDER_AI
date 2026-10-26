@@ -130,7 +130,7 @@ export class AIProvider {
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8500);
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     try {
       const res = await fetch(`${baseUrl}/chat/completions`, {
@@ -152,7 +152,7 @@ export class AIProvider {
       return data.choices?.[0]?.message?.content || '';
     } catch (err: any) {
       if (err.name === 'AbortError') {
-        throw new AIProviderError('OpenAI request timed out after 8.5 seconds.', 'openai', err);
+        throw new AIProviderError('OpenAI request timed out after 15 seconds.', 'openai', err);
       }
       throw err;
     } finally {
@@ -193,7 +193,7 @@ export class AIProvider {
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8500);
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     try {
       const res = await fetch(url, {
@@ -212,7 +212,7 @@ export class AIProvider {
       return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     } catch (err: any) {
       if (err.name === 'AbortError') {
-        throw new AIProviderError('Gemini request timed out after 8.5 seconds.', 'gemini', err);
+        throw new AIProviderError('Gemini request timed out after 15 seconds.', 'gemini', err);
       }
       throw err;
     } finally {

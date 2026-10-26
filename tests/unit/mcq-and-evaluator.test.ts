@@ -235,4 +235,135 @@ describe('MCQ Deterministic Grading and Evaluator Unit Tests', () => {
       'Syllabus content is too short or unreadable.'
     );
   });
+
+  it('generates dynamic distractors without using old hardcoded distractor strings', async () => {
+    const chunkA: DocumentChunk = {
+      id: 'chunk_os_sync',
+      documentId: 'doc_os',
+      userId: 'test_user',
+      chunkIndex: 0,
+      pageNumber: 2,
+      sectionTitle: 'Unit 3: Synchronization',
+      content:
+        'Mutex Locks and Semaphores solve the critical section problem. Peterson solution provides a software-based approach for two processes. Deadlocks occur when four conditions hold simultaneously: mutual exclusion, hold and wait, no preemption, and circular wait.',
+      tokenCount: 40,
+      createdAt: new Date().toISOString(),
+    };
+
+    const topicA: Topic = {
+      id: 'topic_sync_1',
+      subjectId: 'sub_os_1',
+      userId: 'test_user',
+      name: 'Synchronization Tools',
+      level: 2,
+      orderIndex: 1,
+      weight: 1.0,
+      createdAt: new Date().toISOString(),
+    };
+
+    const generated = await generateQuestionsForTopic({
+      userId: 'test_user',
+      subjectId: 'sub_os_1',
+      topic: topicA,
+      chunks: [chunkA],
+      count: 1,
+      preferType: 'mcq',
+    });
+
+    const mcq = generated.find((q) => q.questionType === 'mcq')!;
+    expect(mcq).toBeDefined();
+    expect(mcq.options).toHaveLength(4);
+
+    // Old hardcoded distractors must NOT appear
+    const oldHardcodedDistractors = [
+      'an isolated subsystem operating without',
+      'a deprecated procedure superseded by unvalidated assumptions',
+      'a manual verification method without automated rule checks',
+    ];
+
+    for (const opt of mcq.options!) {
+      for (const oldDis of oldHardcodedDistractors) {
+        expect(opt.toLowerCase()).not.toContain(oldDis);
+      }
+    }
+
+    // Verify option correctness alignment
+    expect(mcq.options).toContain(mcq.correctAnswer);
+  });
+
+  it('generates different distractors for two different topics', async () => {
+    const chunkTopic1: DocumentChunk = {
+      id: 'chunk_db_acid',
+      documentId: 'doc_db',
+      userId: 'test_user',
+      chunkIndex: 0,
+      pageNumber: 1,
+      sectionTitle: 'Transactions',
+      content:
+        'ACID properties guarantee reliability in database transactions. Atomicity ensures all operations succeed or completely rollback. Isolation levels prevent dirty reads and non-repeatable reads.',
+      tokenCount: 30,
+      createdAt: new Date().toISOString(),
+    };
+
+    const topic1: Topic = {
+      id: 'topic_acid',
+      subjectId: 'sub_db',
+      userId: 'test_user',
+      name: 'ACID Properties',
+      level: 2,
+      orderIndex: 1,
+      weight: 1.0,
+      createdAt: new Date().toISOString(),
+    };
+
+    const chunkTopic2: DocumentChunk = {
+      id: 'chunk_net_dns',
+      documentId: 'doc_net',
+      userId: 'test_user',
+      chunkIndex: 0,
+      pageNumber: 1,
+      sectionTitle: 'Domain Name System',
+      content:
+        'The Domain Name System translates human-readable hostnames into IP addresses. Recursive resolvers query root servers, TLD servers, and authoritative name servers. DNS caching reduces lookup latency across the network.',
+      tokenCount: 35,
+      createdAt: new Date().toISOString(),
+    };
+
+    const topic2: Topic = {
+      id: 'topic_dns',
+      subjectId: 'sub_net',
+      userId: 'test_user',
+      name: 'Domain Name System',
+      level: 2,
+      orderIndex: 2,
+      weight: 1.0,
+      createdAt: new Date().toISOString(),
+    };
+
+    const [q1List, q2List] = await Promise.all([
+      generateQuestionsForTopic({
+        userId: 'test_user',
+        subjectId: 'sub_db',
+        topic: topic1,
+        chunks: [chunkTopic1],
+        count: 1,
+        preferType: 'mcq',
+      }),
+      generateQuestionsForTopic({
+        userId: 'test_user',
+        subjectId: 'sub_net',
+        topic: topic2,
+        chunks: [chunkTopic2],
+        count: 1,
+        preferType: 'mcq',
+      }),
+    ]);
+
+    const q1 = q1List.find((q) => q.questionType === 'mcq')!;
+    const q2 = q2List.find((q) => q.questionType === 'mcq')!;
+
+    // Distractors must not be identical across different topics
+    expect(q1.options).not.toEqual(q2.options);
+    expect(q1.correctAnswer).not.toEqual(q2.correctAnswer);
+  });
 });

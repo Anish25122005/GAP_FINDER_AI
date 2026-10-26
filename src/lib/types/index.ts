@@ -137,6 +137,7 @@ export interface Quiz {
   questionCount: number;
   status: 'ready' | 'generating' | 'completed';
   topicIds: string[];
+  questionIds?: string[];
   createdAt: string;
   questions?: GeneratedQuestion[];
 }
