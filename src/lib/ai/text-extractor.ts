@@ -1,41 +1,8 @@
+// IMPORTANT: polyfills MUST be imported before pdf-parse so that
+// DOMMatrix, Path2D, and ImageData globals exist when pdfjs-dist
+// evaluates its module-scope code (e.g. `const SCALE_MATRIX = new DOMMatrix()`).
+import './pdf-polyfills';
 import { PDFParse } from 'pdf-parse';
-import path from 'path';
-import { pathToFileURL } from 'url';
-
-let workerConfigured = false;
-
-/**
- * Ensures PDF.js uses the local legacy worker in Node.js/Next.js server environments.
- */
-async function configurePdfWorker() {
-  if (workerConfigured) return;
-  try {
-    const workerPath = path.resolve(process.cwd(), 'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs');
-    const workerUrl = pathToFileURL(workerPath).href;
-
-    try {
-      const workerModule = await import(workerUrl);
-      if (workerModule && (workerModule.WorkerMessageHandler || (workerModule as any).default?.WorkerMessageHandler)) {
-        (globalThis as any).pdfjsWorker = workerModule;
-      }
-    } catch {
-      // ignore
-    }
-
-    try {
-      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-      if (pdfjs && pdfjs.GlobalWorkerOptions) {
-        pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-      }
-    } catch {
-      // ignore
-    }
-
-    workerConfigured = true;
-  } catch {
-    workerConfigured = true;
-  }
-}
 
 export interface ExtractedPage {
   pageNumber: number;
@@ -85,7 +52,6 @@ export function normalizeExtractedText(text: string): string {
  * Extracts readable text from a PDF Buffer.
  */
 export async function extractTextFromPdf(buffer: Buffer): Promise<ExtractionResult> {
-  await configurePdfWorker();
   const parser = new PDFParse({ data: buffer });
   try {
     const textResult = await parser.getText();
