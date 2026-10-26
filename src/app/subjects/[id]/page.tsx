@@ -21,6 +21,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert } from '@/components/ui/input';
+import { safeReadJsonResponse } from '@/lib/utils';
 import type { Subject, Topic, UserProfile } from '@/lib/types';
 
 function SubjectDetailContent() {
@@ -36,7 +37,9 @@ function SubjectDetailContent() {
 
   // Syllabus parsing state
   const [showParseModal, setShowParseModal] = useState(false);
+  const [parseMode, setParseMode] = useState<'text' | 'file'>('text');
   const [syllabusText, setSyllabusText] = useState('');
+  const [syllabusFile, setSyllabusFile] = useState<File | null>(null);
   const [isParsing, setIsParsing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
 
@@ -73,19 +76,37 @@ function SubjectDetailContent() {
   }, [subjectId, router]);
 
   const handleParseSyllabus = async () => {
-    if (!syllabusText.trim()) return;
+    if (parseMode === 'text' && !syllabusText.trim()) {
+      setParseError('Please paste your syllabus text or switch to file upload.');
+      return;
+    }
+    if (parseMode === 'file' && !syllabusFile) {
+      setParseError('Please select a syllabus document (.pdf or .txt) to upload.');
+      return;
+    }
+
     setIsParsing(true);
     setParseError(null);
 
     try {
-      const res = await fetch('/api/syllabus/parse', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: syllabusText, subjectId }),
-      });
+      let res: Response;
+      if (parseMode === 'file' && syllabusFile) {
+        const formData = new FormData();
+        formData.append('file', syllabusFile);
+        formData.append('subjectId', subjectId);
+        res = await fetch('/api/syllabus/parse', {
+          method: 'POST',
+          body: formData,
+        });
+      } else {
+        res = await fetch('/api/syllabus/parse', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: syllabusText, subjectId }),
+        });
+      }
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to parse syllabus');
+      const data = await safeReadJsonResponse(res);
 
       if (data.objectives && data.objectives.length > 0) {
         setObjectives(data.objectives);
@@ -98,14 +119,14 @@ function SubjectDetailContent() {
         body: JSON.stringify({ topics: data.flattened }),
       });
 
-      const saveData = await saveRes.json();
-      if (!saveRes.ok) throw new Error(saveData.error || 'Failed to save topics');
+      const saveData = await safeReadJsonResponse(saveRes);
 
       setTopics(saveData.topics);
       setShowParseModal(false);
       setSyllabusText('');
+      setSyllabusFile(null);
     } catch (err: any) {
-      setParseError(err.message);
+      setParseError(err.message || 'Failed to parse syllabus. Please verify your input.');
     } finally {
       setIsParsing(false);
     }
@@ -131,14 +152,12 @@ function SubjectDetailContent() {
         body: JSON.stringify({ topics: updated }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        setTopics(data.topics);
-        setShowAddTopicModal(false);
-        setNewTopicName('');
-      }
-    } catch {
-      alert('Failed to add topic');
+      const data = await safeReadJsonResponse(res);
+      setTopics(data.topics);
+      setShowAddTopicModal(false);
+      setNewTopicName('');
+    } catch (err: any) {
+      alert(err.message || 'Failed to add topic');
     }
   };
 
@@ -218,18 +237,71 @@ function SubjectDetailContent() {
                 Import Syllabus Outline
               </h3>
               <p className="text-xs text-slate-500 mb-4 leading-relaxed">
-                Paste your course syllabus text below. Our parser will extract the hierarchical Unit, Topic, and Subtopic structure.
+                Provide your course syllabus outline below. Our parser will extract the hierarchical Unit, Topic, and Subtopic structure.
               </p>
+
+              {/* Mode Selection Tabs */}
+              <div className="flex items-center gap-4 border-b border-slate-200 dark:border-slate-800 mb-4 text-xs font-medium">
+                <button
+                  type="button"
+                  onClick={() => { setParseMode('text'); setParseError(null); }}
+                  className={`pb-2 transition-colors ${
+                    parseMode === 'text'
+                      ? 'border-b-2 border-indigo-600 text-indigo-600 font-semibold dark:text-indigo-400'
+                      : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                  }`}
+                >
+                  Paste Outline Text
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setParseMode('file'); setParseError(null); }}
+                  className={`pb-2 transition-colors ${
+                    parseMode === 'file'
+                      ? 'border-b-2 border-indigo-600 text-indigo-600 font-semibold dark:text-indigo-400'
+                      : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                  }`}
+                >
+                  Upload File (.pdf, .txt)
+                </button>
+              </div>
 
               {parseError && <Alert variant="danger" className="mb-4">{parseError}</Alert>}
 
-              <textarea
-                rows={8}
-                className="w-full rounded-lg border border-slate-300 bg-white p-3 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-indigo-600 dark:border-slate-700 dark:bg-slate-950"
-                placeholder={`Unit 1: Introduction to Distributed Systems\n1.1 Client-Server Models\n1.2 Byzantine Faults\n\nUnit 2: Consensus\n2.1 Paxos & Raft`}
-                value={syllabusText}
-                onChange={(e) => setSyllabusText(e.target.value)}
-              />
+              {parseMode === 'text' ? (
+                <textarea
+                  rows={8}
+                  className="w-full rounded-lg border border-slate-300 bg-white p-3 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-indigo-600 dark:border-slate-700 dark:bg-slate-950"
+                  placeholder={`Unit 1: Introduction to Distributed Systems\n1.1 Client-Server Models\n1.2 Byzantine Faults\n\nUnit 2: Consensus\n2.1 Paxos & Raft`}
+                  value={syllabusText}
+                  onChange={(e) => setSyllabusText(e.target.value)}
+                />
+              ) : (
+                <div className="space-y-3">
+                  <div className="border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-lg p-6 text-center hover:border-indigo-500 transition-colors">
+                    <input
+                      type="file"
+                      id="syllabus-file-input"
+                      accept=".pdf,.txt,text/plain,application/pdf"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0] || null;
+                        setSyllabusFile(f);
+                        setParseError(null);
+                      }}
+                      className="hidden"
+                    />
+                    <label htmlFor="syllabus-file-input" className="cursor-pointer block">
+                      <FileText className="w-8 h-8 text-indigo-500 mx-auto mb-2" />
+                      <span className="text-sm font-medium text-slate-700 dark:text-slate-300 block">
+                        {syllabusFile ? syllabusFile.name : 'Choose a PDF or Plain Text syllabus file'}
+                      </span>
+                      <span className="text-xs text-slate-400 mt-1 block">
+                        {syllabusFile ? `${(syllabusFile.size / 1024).toFixed(1)} KB` : 'Supports PDF and TXT files up to 15MB'}
+                      </span>
+                    </label>
+                  </div>
+                </div>
+              )}
 
               <div className="flex justify-end gap-2 mt-4">
                 <Button variant="ghost" size="sm" onClick={() => setShowParseModal(false)}>

@@ -44,8 +44,13 @@ interface LocalStoreData {
   jobs: ProcessingJob[];
 }
 
-const DATA_DIR = path.join(process.cwd(), '.gapfinder_data');
-const DATA_FILE = path.join(DATA_DIR, 'store.json');
+const DATA_DIR = process.env.VERCEL
+  ? path.join('/tmp', '.gapfinder_data')
+  : path.join(process.cwd(), '.gapfinder_data');
+
+const DATA_FILE = process.env.VITEST_POOL_ID
+  ? path.join(DATA_DIR, `store_worker_${process.env.VITEST_POOL_ID}.json`)
+  : path.join(DATA_DIR, 'store.json');
 
 class Repository {
   private memoryStore: LocalStoreData | null = null;
@@ -101,7 +106,17 @@ class Repository {
       if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });
       }
-      fs.writeFileSync(DATA_FILE, JSON.stringify(this.memoryStore, null, 2), 'utf-8');
+      const tempFile = `${DATA_FILE}.${Date.now()}.${Math.random().toString(36).slice(2, 7)}.tmp`;
+      fs.writeFileSync(tempFile, JSON.stringify(this.memoryStore, null, 2), 'utf-8');
+      try {
+        if (fs.existsSync(DATA_FILE)) {
+          fs.unlinkSync(DATA_FILE);
+        }
+        fs.renameSync(tempFile, DATA_FILE);
+      } catch {
+        fs.writeFileSync(DATA_FILE, JSON.stringify(this.memoryStore, null, 2), 'utf-8');
+        try { fs.unlinkSync(tempFile); } catch {}
+      }
     } catch (e) {
       console.error('Failed to save store to file:', e);
     }

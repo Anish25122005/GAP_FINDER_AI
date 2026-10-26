@@ -8,7 +8,7 @@ const GeneratedQuestionSchema = z.object({
   questionText: z.string().min(15),
   questionType: z.enum(['mcq', 'short_answer']),
   difficulty: z.enum(['easy', 'medium', 'hard']),
-  options: z.array(z.string()).length(4).optional(),
+  options: z.array(z.string().max(160, 'Options must be concise under 160 characters')).length(4).optional(),
   correctAnswer: z.string().min(1),
   explanation: z.string().min(10),
   keyConcepts: z.array(z.string()).optional(),
@@ -26,6 +26,37 @@ export interface QuestionGenerationOptions {
   chunks: DocumentChunk[];
   count?: number;
   preferType?: 'mcq' | 'short_answer' | 'mixed';
+}
+
+/**
+ * Shuffles options randomly (Fisher-Yates) and ensures correctAnswer matches
+ * the exact string of the chosen correct option in the new shuffled array.
+ */
+export function shuffleOptionsAndAlignAnswer(
+  options: string[],
+  correctAnswer: string
+): { shuffledOptions: string[]; alignedCorrectAnswer: string } {
+  const cleaned = options.map((opt) => opt.trim().replace(/^[A-Da-d][).:-]\s*/, ''));
+  const targetAnswer = correctAnswer.trim().replace(/^[A-Da-d][).:-]\s*/, '');
+
+  let chosenAnswer = targetAnswer;
+  const matchIndex = cleaned.findIndex((o) => o.toLowerCase() === targetAnswer.toLowerCase());
+  if (matchIndex >= 0) {
+    chosenAnswer = cleaned[matchIndex];
+  } else {
+    chosenAnswer = cleaned[0];
+  }
+
+  const shuffled = [...cleaned];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+
+  return {
+    shuffledOptions: shuffled,
+    alignedCorrectAnswer: chosenAnswer,
+  };
 }
 
 /**
@@ -63,8 +94,12 @@ Requirements:
 2. Generate question types: ${preferType === 'mixed' ? 'A mix of multiple-choice (MCQ) and short-answer' : preferType}.
 3. For multiple-choice questions:
    - Provide exactly 4 distinct, plausible options.
+   - CRITICAL REQUIREMENT: Each option MUST be a concise phrase or short sentence under 15 words (maximum 120 characters).
+   - NEVER put entire paragraphs, textbook notes, student names, rhetorical questions, or explanatory text into an answer option.
+   - Keep the explanation and citation ONLY in the "explanation" and "citedExcerpt" fields, NEVER in the options.
    - Exactly one option must be strictly correct according to the context.
    - Three options must be plausible distractors representing common student misconceptions.
+   - Do NOT always make the first option (Option A) the correct answer. Vary the correct option position.
 4. For short-answer questions:
    - Provide a concise reference answer.
    - List 2 to 4 key concepts required for grading.
@@ -77,38 +112,66 @@ Requirements:
     // Generate deterministic grounded questions directly from chunk content for offline/test environments
     const firstChunk = chunks[0];
     const excerpt = firstChunk.content.slice(0, 180).trim();
-    const sentences = firstChunk.content.split('. ').filter((s) => s.length > 20);
+
+    // Clean and split chunk into sentences/propositions
+    const cleanContent = firstChunk.content
+      .replace(/[\r\n]+/g, ' ')
+      .replace(/^(?:what\s+is|define|explain|overview\s+of|notes?\s+on)\s+[^?.:\n]+[?.:\n]+/i, '')
+      .replace(/^[A-Z][A-Za-z0-9\s_-]+:\s*/, '')
+      .trim();
+
+    const rawSentences = cleanContent
+      .split(/(?<=[.?!])\s+/)
+      .map((s) => s.trim().replace(/^[-*•\d.)\s]+/, ''))
+      .filter((s) => s.length > 15 && !/^(what is|who is|why does|example:)\b/i.test(s));
+
+    let candidateSentence = rawSentences[0] || `Foundational mechanism of ${topic.name}`;
+
+    // Ensure candidateSentence is a concise definition under 120 chars and under 18 words
+    if (candidateSentence.length > 120 || candidateSentence.split(/\s+/).length > 18) {
+      const clauseMatch = candidateSentence.match(/^([^,;:]+[,;:]?[^,;:]*)/);
+      if (clauseMatch && clauseMatch[1].length >= 20 && clauseMatch[1].length <= 120) {
+        candidateSentence = clauseMatch[1].trim();
+      } else {
+        const words = candidateSentence.split(/\s+/).slice(0, 14);
+        candidateSentence = words.join(' ');
+      }
+    }
+    const cleanCorrectAnswer = candidateSentence.trim().replace(/[.,;:]$/, '');
+
+    // Craft concise, plausible distractors (< 90 chars each)
+    const distractor1 = `An isolated subsystem operating without ${topic.name} integration`;
+    const distractor2 = `A deprecated procedure superseded by unvalidated assumptions`;
+    const distractor3 = `A manual verification method without automated rule checks`;
+
+    const rawOptions = [cleanCorrectAnswer, distractor1, distractor2, distractor3];
+    const { shuffledOptions, alignedCorrectAnswer } = shuffleOptionsAndAlignAnswer(rawOptions, cleanCorrectAnswer);
 
     const questions: z.infer<typeof GeneratedQuestionSchema>[] = [];
 
     // 1. MCQ
-    const keySentence = sentences[0] || `The topic of ${topic.name} is defined in course materials.`;
     questions.push({
       questionText: `According to the course notes on ${topic.name}, what is the primary function or principle described?`,
       questionType: 'mcq',
       difficulty: 'medium',
-      options: [
-        keySentence.trim().replace(/\.$/, ''),
-        `It operates independently without any relation to ${topic.name}.`,
-        `It bypasses standard validation rules completely.`,
-        `It is deprecated and replaced by ungrounded assumptions.`,
-      ],
-      correctAnswer: keySentence.trim().replace(/\.$/, ''),
-      explanation: `As stated directly in the course materials: "${excerpt}...", this represents the primary verified definition.`,
+      options: shuffledOptions,
+      correctAnswer: alignedCorrectAnswer,
+      explanation: `As verified in the course materials: "${excerpt}...", this represents the primary grounded definition.`,
       citedExcerpt: excerpt,
     });
 
     // 2. Short Answer if requested
     if (count > 1) {
-      const secondSentence = sentences[1] || `Key concepts include structured analysis and evidence evaluation.`;
+      const secondCandidate = rawSentences[1] || `Key concepts include structured analysis and evidence evaluation.`;
+      const secondExcerpt = secondCandidate.slice(0, 120).trim();
       questions.push({
         questionText: `Explain how ${topic.name} is implemented and identify its key considerations based on your course notes.`,
         questionType: 'short_answer',
         difficulty: 'medium',
-        correctAnswer: secondSentence,
-        explanation: `Course text states: "${secondSentence}". A complete response must address this core mechanism.`,
+        correctAnswer: secondExcerpt,
+        explanation: `Course text states: "${secondExcerpt}". A complete response must address this core mechanism.`,
         keyConcepts: [topic.name, 'Implementation considerations', 'Core mechanism'],
-        citedExcerpt: secondSentence.slice(0, 150),
+        citedExcerpt: secondExcerpt,
       });
     }
 
@@ -128,7 +191,7 @@ Requirements:
     rawQuestions = fallbackGenerator().questions;
   }
 
-  // Validate and construct domain objects with source citation links
+  // Validate, sanitize, shuffle, and construct domain objects with source citation links
   const validatedQuestions: GeneratedQuestion[] = [];
 
   for (const q of rawQuestions) {
@@ -145,6 +208,19 @@ Requirements:
       excerpt: q.citedExcerpt,
     };
 
+    let processedOptions = q.options;
+    let processedAnswer = q.correctAnswer;
+
+    // For MCQ, strip letter prefixes, enforce concise limits, and shuffle options
+    if (q.questionType === 'mcq' && q.options && q.options.length === 4) {
+      const { shuffledOptions, alignedCorrectAnswer } = shuffleOptionsAndAlignAnswer(
+        q.options,
+        q.correctAnswer
+      );
+      processedOptions = shuffledOptions;
+      processedAnswer = alignedCorrectAnswer;
+    }
+
     const candidate: Omit<GeneratedQuestion, 'id' | 'createdAt'> = {
       userId,
       subjectId,
@@ -152,13 +228,13 @@ Requirements:
       questionText: q.questionText,
       questionType: q.questionType,
       difficulty: q.difficulty,
-      options: q.options,
-      correctAnswer: q.correctAnswer,
+      options: processedOptions,
+      correctAnswer: processedAnswer,
       rubric:
         q.questionType === 'short_answer'
           ? {
               keyConcepts: q.keyConcepts || [topic.name],
-              referenceAnswer: q.correctAnswer,
+              referenceAnswer: processedAnswer,
             }
           : undefined,
       explanation: q.explanation,

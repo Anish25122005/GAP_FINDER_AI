@@ -129,22 +129,35 @@ export class AIProvider {
       body.response_format = { type: 'json_object' };
     }
 
-    const res = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8500);
 
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new AIProviderError(`OpenAI API error (${res.status}): ${errText}`, 'openai');
+    try {
+      const res = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new AIProviderError(`OpenAI API error (${res.status}): ${errText}`, 'openai');
+      }
+
+      const data = await res.json();
+      return data.choices?.[0]?.message?.content || '';
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        throw new AIProviderError('OpenAI request timed out after 8.5 seconds.', 'openai', err);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    const data = await res.json();
-    return data.choices?.[0]?.message?.content || '';
   }
 
   private async callGemini(messages: LLMMessage[], options: CompletionOptions): Promise<string> {
@@ -179,19 +192,32 @@ export class AIProvider {
       body.generationConfig.responseMimeType = 'application/json';
     }
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8500);
 
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new AIProviderError(`Gemini API error (${res.status}): ${errText}`, 'gemini');
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new AIProviderError(`Gemini API error (${res.status}): ${errText}`, 'gemini');
+      }
+
+      const data = await res.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        throw new AIProviderError('Gemini request timed out after 8.5 seconds.', 'gemini', err);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    const data = await res.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
   }
 
   private fallbackTextCompletion(messages: LLMMessage[]): string {

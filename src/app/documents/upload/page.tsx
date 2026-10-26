@@ -17,6 +17,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert } from '@/components/ui/input';
+import { safeReadJsonResponse } from '@/lib/utils';
 import type { Subject, UserProfile } from '@/lib/types';
 
 export default function DocumentUploadPage() {
@@ -104,14 +105,10 @@ export default function DocumentUploadPage() {
         body: formData,
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Document processing and indexing failed.');
-      }
-
+      const data = await safeReadJsonResponse(res);
       setSuccessResult(data);
     } catch (err: any) {
-      setError(err.message);
+      setError(err.message || 'Document processing and indexing failed.');
     } finally {
       setIsUploading(false);
     }

@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { gradeMultipleChoice, evaluateShortAnswer } from '@/lib/ai/evaluator';
 import { validateQuestion } from '@/lib/ai/question-validator';
-import type { GeneratedQuestion } from '@/lib/types';
+import { generateQuestionsForTopic } from '@/lib/ai/question-generator';
+import { safeReadJsonResponse } from '@/lib/utils';
+import type { GeneratedQuestion, DocumentChunk, Topic } from '@/lib/types';
 
 describe('MCQ Deterministic Grading and Evaluator Unit Tests', () => {
   const mcqQuestion: GeneratedQuestion = {
@@ -108,5 +110,129 @@ describe('MCQ Deterministic Grading and Evaluator Unit Tests', () => {
     const validation = validateQuestion(invalidQuestion as any);
     expect(validation.isValid).toBe(false);
     expect(validation.errors).toContain('MCQ must have exactly 4 answer options.');
+  });
+
+  it('rejects MCQ options exceeding 160 characters or containing question prompts', () => {
+    const paragraphOption =
+      'What is Semantic Web? The Semantic Web is an extension of the existing World Wide Web that makes information understandable and processable by computers, allowing machines to intelligently discover, integrate, and analyze web data across heterogeneous systems.';
+
+    const questionWithParagraph: Partial<GeneratedQuestion> = {
+      questionText: 'What is the primary function of the Semantic Web according to the materials?',
+      questionType: 'mcq',
+      difficulty: 'medium',
+      options: [
+        paragraphOption,
+        'A relational database engine',
+        'A local area network protocol',
+        'A static HTML document viewer',
+      ],
+      correctAnswer: paragraphOption,
+      explanation: 'The Semantic Web extends the Web to make information processable by machines.',
+      citationMetadata: [
+        {
+          chunkId: 'chk_10',
+          documentId: 'doc_1',
+          documentTitle: 'Semantic Web Notes',
+          excerpt: 'The Semantic Web is an extension of the existing World Wide Web...',
+        },
+      ],
+    };
+
+    const validation = validateQuestion(questionWithParagraph);
+    expect(validation.isValid).toBe(false);
+    expect(validation.errors.some((e) => e.includes('exceeds maximum allowed length of 160 characters'))).toBe(true);
+    expect(validation.errors.some((e) => e.includes('question prompt or lecture preamble'))).toBe(true);
+  });
+
+  it('generates concise options from long narrative lecture chunks without leaking full paragraphs', async () => {
+    const narrativeChunk: DocumentChunk = {
+      id: 'chunk_narrative_1',
+      documentId: 'doc_semweb_1',
+      userId: 'test_user',
+      chunkIndex: 0,
+      pageNumber: 1,
+      sectionTitle: 'Unit 1: Semantic Web',
+      content:
+        'What is Semantic Web? The Semantic Web is an extension of the existing World Wide Web that makes information understandable and processable by computers. Ravi studies Artificial Intelligence at JNTUH and explores RDF data models and ontology representations for automated machine reasoning.',
+      tokenCount: 45,
+      createdAt: new Date().toISOString(),
+    };
+
+    const topic: Topic = {
+      id: 'topic_semweb_1',
+      subjectId: 'sub_semweb_1',
+      userId: 'test_user',
+      name: 'Semantic Web Principles',
+      level: 2,
+      orderIndex: 1,
+      weight: 1.0,
+      createdAt: new Date().toISOString(),
+    };
+
+    const generated = await generateQuestionsForTopic({
+      userId: 'test_user',
+      subjectId: 'sub_semweb_1',
+      topic,
+      chunks: [narrativeChunk],
+      count: 1,
+      preferType: 'mcq',
+    });
+
+    expect(generated.length).toBeGreaterThan(0);
+    const mcq = generated.find((q) => q.questionType === 'mcq')!;
+    expect(mcq).toBeDefined();
+    expect(mcq.options).toBeDefined();
+    expect(mcq.options?.length).toBe(4);
+
+    // Verify each option is strictly concise (under 160 characters and under 25 words)
+    for (const opt of mcq.options!) {
+      expect(opt.length).toBeLessThanOrEqual(160);
+      expect(opt.split(/\s+/).length).toBeLessThanOrEqual(25);
+      // Ensure the option does NOT contain the question header or student narrative
+      expect(opt.toLowerCase()).not.toContain('what is semantic web?');
+      expect(opt.toLowerCase()).not.toContain('ravi studies artificial intelligence');
+    }
+
+    // Ensure the correct answer is present in options
+    expect(mcq.options).toContain(mcq.correctAnswer);
+
+    // Verify passing question validation
+    const validation = validateQuestion(mcq);
+    expect(validation.isValid).toBe(true);
+  });
+
+  it('safeReadJsonResponse safely handles empty, HTML 504, and valid JSON responses', async () => {
+    // 1. Valid JSON response
+    const validResponse = new Response(JSON.stringify({ success: true, count: 5 }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const parsedValid = await safeReadJsonResponse(validResponse);
+    expect(parsedValid).toEqual({ success: true, count: 5 });
+
+    // 2. HTML 504 Gateway Timeout response (from Vercel or proxy)
+    const html504Response = new Response('<html><head><title>504 Gateway Timeout</title></head><body><h1>Gateway Timeout</h1></body></html>', {
+      status: 504,
+      statusText: 'Gateway Timeout',
+      headers: { 'Content-Type': 'text/html' },
+    });
+    await expect(safeReadJsonResponse(html504Response)).rejects.toThrow(
+      'Request failed with status 504 (Gateway Timeout)'
+    );
+
+    // 3. Empty body with 200 OK
+    const emptyResponse = new Response('', { status: 200 });
+    await expect(safeReadJsonResponse(emptyResponse)).rejects.toThrow(
+      'Server returned an empty response. Please try again.'
+    );
+
+    // 4. JSON error with error field
+    const jsonErrorResponse = new Response(JSON.stringify({ error: 'Syllabus content is too short or unreadable.' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    await expect(safeReadJsonResponse(jsonErrorResponse)).rejects.toThrow(
+      'Syllabus content is too short or unreadable.'
+    );
   });
 });

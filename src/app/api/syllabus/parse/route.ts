@@ -19,11 +19,22 @@ export async function POST(req: NextRequest) {
       subjectId = (formData.get('subjectId') as string) || '';
 
       if (!file) {
-        return NextResponse.json({ error: 'No file uploaded' }, { status: 400 });
+        return NextResponse.json({ error: 'No file uploaded. Please select a file.' }, { status: 400 });
+      }
+
+      const filename = file.name || 'syllabus';
+      const isPdf = filename.toLowerCase().endsWith('.pdf');
+      const isTxt = filename.toLowerCase().endsWith('.txt') || file.type.includes('text');
+
+      if (!isPdf && !isTxt) {
+        return NextResponse.json(
+          { error: 'Unsupported file format. Please upload a PDF (.pdf) or Plain Text (.txt) file.' },
+          { status: 400 }
+        );
       }
 
       const buffer = Buffer.from(await file.arrayBuffer());
-      if (file.name.toLowerCase().endsWith('.pdf')) {
+      if (isPdf) {
         const ext = await extractTextFromPdf(buffer);
         syllabusText = ext.text;
       } else {
@@ -31,7 +42,16 @@ export async function POST(req: NextRequest) {
         syllabusText = ext.text;
       }
     } else {
-      const body = await req.json();
+      let body: any = {};
+      try {
+        const rawBody = await req.text();
+        body = rawBody && rawBody.trim() ? JSON.parse(rawBody) : {};
+      } catch {
+        return NextResponse.json(
+          { error: 'Invalid JSON request body. Expected { text, subjectId }.' },
+          { status: 400 }
+        );
+      }
       syllabusText = body.text || '';
       subjectId = body.subjectId || '';
     }
@@ -46,13 +66,26 @@ export async function POST(req: NextRequest) {
     const { units, objectives } = await parseSyllabusWithMetadata(syllabusText);
     const flattened = flattenTopicTree(units, subjectId, auth.user.id);
 
-    return NextResponse.json({
-      units,
-      objectives,
-      flattened,
-      extractedCharacterCount: syllabusText.length,
-    });
+    return NextResponse.json(
+      {
+        units,
+        objectives,
+        flattened,
+        extractedCharacterCount: syllabusText.length,
+      },
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
   } catch (err: any) {
-    return NextResponse.json({ error: err.message || 'Failed to parse syllabus' }, { status: 500 });
+    console.error('Syllabus parsing route error:', err);
+    return NextResponse.json(
+      { error: err.message || 'Failed to parse syllabus outline.' },
+      {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
   }
 }

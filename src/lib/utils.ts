@@ -114,3 +114,38 @@ export function getPriorityBadgeStyles(priority: PlanItemPriority): string {
       return 'bg-slate-100 text-slate-800';
   }
 }
+
+/**
+ * Safely reads and parses a JSON response from a fetch call.
+ * If the response body is empty, non-JSON (e.g. 504 HTML timeout or 500 error page),
+ * or returns an HTTP error code, it extracts a clean error message without throwing
+ * "SyntaxError: JSON.parse: unexpected end of data at line 1 column 1".
+ */
+export async function safeReadJsonResponse<T = any>(res: Response): Promise<T> {
+  const text = await res.text();
+  let data: any = null;
+
+  if (text && text.trim().length > 0) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      // Body is not valid JSON (e.g. HTML error page or plain text gateway timeout)
+    }
+  }
+
+  if (!res.ok) {
+    const errorMsg =
+      data?.error ||
+      data?.message ||
+      (text && !text.trim().startsWith('<') && text.length < 300
+        ? text.trim()
+        : `Request failed with status ${res.status} (${res.statusText || 'Server Error'})`);
+    throw new Error(errorMsg);
+  }
+
+  if (data === null || data === undefined) {
+    throw new Error('Server returned an empty response. Please try again.');
+  }
+
+  return data as T;
+}
