@@ -1,7 +1,11 @@
-// IMPORTANT: polyfills MUST be imported before pdf-parse so that
+// IMPORTANT: polyfills MUST be imported before pdf-parse and pdf.worker.mjs so that
 // DOMMatrix, Path2D, and ImageData globals exist when pdfjs-dist
 // evaluates its module-scope code (e.g. `const SCALE_MATRIX = new DOMMatrix()`).
 import './pdf-polyfills';
+// Pre-register pdf.worker into globalThis.pdfjsWorker so pdfjs-dist uses the in-memory
+// WorkerMessageHandler directly and does NOT trigger runtime `import(this.workerSrc)`
+// on Vercel where relative file resolution fails.
+import 'pdfjs-dist/legacy/build/pdf.worker.mjs';
 import { PDFParse } from 'pdf-parse';
 
 export interface ExtractedPage {

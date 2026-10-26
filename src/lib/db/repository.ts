@@ -168,7 +168,9 @@ class Repository {
 
   async getUserById(id: string): Promise<UserProfile | null> {
     const store = this.loadStore();
-    const user = store.users.find((u) => u.id === id);
+    const user = store.users.find(
+      (u) => u.id === id || u.email.toLowerCase() === id.toLowerCase()
+    );
     if (!user) return null;
     const { passwordHash: _, ...profile } = user;
     return profile;

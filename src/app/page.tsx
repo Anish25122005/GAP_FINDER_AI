@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -14,13 +14,30 @@ import {
   TrendingDown,
   Layers,
   FileCheck2,
+  User,
+  LayoutDashboard,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import type { UserProfile } from '@/lib/types';
 
 export default function LandingPage() {
   const router = useRouter();
   const [isDemoLoading, setIsDemoLoading] = useState(false);
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/auth/me')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.user) {
+          setCurrentUser(data.user);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setIsAuthChecking(false));
+  }, []);
 
   const handleLaunchDemo = async () => {
     setIsDemoLoading(true);
@@ -38,10 +55,23 @@ export default function LandingPage() {
     }
   };
 
+  const handleExitDemo = async () => {
+    setIsDemoLoading(true);
+    try {
+      await fetch('/api/auth/demo', { method: 'DELETE' });
+      router.push('/dashboard');
+      router.refresh();
+    } catch {
+      setIsDemoLoading(false);
+    }
+  };
+
+  const isDemoActive = currentUser?.email === 'demo.student@gapfinder.ai';
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 flex flex-col">
       {/* Header */}
-      <header className="border-b border-slate-200/80 bg-white/80 dark:border-slate-800/80 dark:bg-slate-900/80 backdrop-blur sticky top-0 z-40">
+      <header className="border-b border-slate-200/80 bg-white/90 dark:border-slate-800/80 dark:bg-slate-900/90 backdrop-blur sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-600 text-white shadow-sm">
@@ -52,27 +82,74 @@ export default function LandingPage() {
             </span>
           </div>
 
-          <div className="flex items-center gap-3">
-            <Link href="/login">
-              <Button variant="ghost" size="sm">
-                Sign In
-              </Button>
-            </Link>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleLaunchDemo}
-              isLoading={isDemoLoading}
-              className="hidden sm:inline-flex border-indigo-200 text-indigo-700 bg-indigo-50/50 hover:bg-indigo-100 dark:border-indigo-800 dark:text-indigo-300 dark:bg-indigo-950/40"
-            >
-              <Sparkles className="w-3.5 h-3.5 mr-1 text-indigo-600" />
-              Live Demo (CS 401)
-            </Button>
-            <Link href="/register">
-              <Button variant="primary" size="sm">
-                Get Started
-              </Button>
-            </Link>
+          <div className="flex items-center gap-2 sm:gap-3">
+            {!isAuthChecking && currentUser ? (
+              // Authenticated user controls
+              <>
+                {isDemoActive ? (
+                  <>
+                    <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-100 text-amber-900 border border-amber-300 dark:bg-amber-950 dark:text-amber-200 dark:border-amber-800">
+                      <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                      Demo Mode
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleExitDemo}
+                      isLoading={isDemoLoading}
+                      className="border-amber-300 text-amber-800 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-200"
+                    >
+                      Exit Demo
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleLaunchDemo}
+                    isLoading={isDemoLoading}
+                    className="border-indigo-200 text-indigo-700 bg-indigo-50/50 hover:bg-indigo-100 dark:border-indigo-800 dark:text-indigo-300 dark:bg-indigo-950/40"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 mr-1 text-indigo-600" />
+                    Demo Mode (CS 401)
+                  </Button>
+                )}
+                <Link href="/dashboard">
+                  <Button variant="primary" size="sm" className="font-semibold shadow-sm">
+                    <LayoutDashboard className="w-3.5 h-3.5 mr-1.5" />
+                    Dashboard
+                  </Button>
+                </Link>
+              </>
+            ) : (
+              // Unauthenticated visitor controls
+              <>
+                <Link href="/login">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="font-semibold text-slate-800 dark:text-slate-100 border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 shadow-xs px-3.5"
+                  >
+                    Sign In
+                  </Button>
+                </Link>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleLaunchDemo}
+                  isLoading={isDemoLoading}
+                  className="hidden sm:inline-flex border-indigo-200 text-indigo-700 bg-indigo-50/50 hover:bg-indigo-100 dark:border-indigo-800 dark:text-indigo-300 dark:bg-indigo-950/40"
+                >
+                  <Sparkles className="w-3.5 h-3.5 mr-1 text-indigo-600" />
+                  Live Demo (CS 401)
+                </Button>
+                <Link href="/register">
+                  <Button variant="primary" size="sm" className="font-semibold shadow-sm">
+                    Get Started
+                  </Button>
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </header>
@@ -95,24 +172,63 @@ export default function LandingPage() {
           Conventional chatbots answer questions you ask. GapFinder AI analyzes your syllabus, course notes, and textbooks to identify the concepts you <strong>do not understand</strong>, proves it with grounded diagnostic quizzes, and builds an adaptive revision plan that respects your daily study budget.
         </p>
 
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
-          <Button
-            size="lg"
-            variant="primary"
-            onClick={handleLaunchDemo}
-            isLoading={isDemoLoading}
-            className="w-full sm:w-auto text-base px-8 py-3.5"
-          >
-            Launch Instant Demo (CS 401)
-            <ArrowRight className="w-4 h-4 ml-2" />
-          </Button>
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-4">
+          {!isAuthChecking && currentUser && !isDemoActive ? (
+            <>
+              <Link href="/dashboard" className="w-full sm:w-auto">
+                <Button size="lg" variant="primary" className="w-full sm:w-auto text-base px-8 py-3.5 shadow-sm">
+                  <LayoutDashboard className="w-4 h-4 mr-2" />
+                  Go to My Dashboard
+                  <ArrowRight className="w-4 h-4 ml-2" />
+                </Button>
+              </Link>
+              <Button
+                size="lg"
+                variant="outline"
+                onClick={handleLaunchDemo}
+                isLoading={isDemoLoading}
+                className="w-full sm:w-auto text-base px-8 py-3.5 border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+              >
+                <Sparkles className="w-4 h-4 mr-2 text-indigo-600" />
+                Explore Demo Mode (CS 401)
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                size="lg"
+                variant="primary"
+                onClick={handleLaunchDemo}
+                isLoading={isDemoLoading}
+                className="w-full sm:w-auto text-base px-8 py-3.5 shadow-sm"
+              >
+                <Sparkles className="w-4 h-4 mr-2" />
+                Launch Instant Demo (CS 401)
+                <ArrowRight className="w-4 h-4 ml-2" />
+              </Button>
 
-          <Link href="/register" className="w-full sm:w-auto">
-            <Button size="lg" variant="outline" className="w-full sm:w-auto text-base px-8 py-3.5">
-              Create Free Account
-            </Button>
-          </Link>
+              <Link href="/register" className="w-full sm:w-auto">
+                <Button size="lg" variant="outline" className="w-full sm:w-auto text-base px-8 py-3.5 font-medium">
+                  Create Free Account
+                </Button>
+              </Link>
+            </>
+          )}
         </div>
+
+        {/* Prominent Sign In link for registered visitors */}
+        {(!currentUser || isDemoActive) && (
+          <p className="text-sm text-slate-600 dark:text-slate-400 mb-14">
+            Already have an account?{' '}
+            <Link
+              href="/login"
+              className="font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 hover:underline inline-flex items-center gap-1"
+            >
+              Sign in to your account
+              <ArrowRight className="w-3.5 h-3.5 inline" />
+            </Link>
+          </p>
+        )}
 
         {/* Core Principles Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-left">

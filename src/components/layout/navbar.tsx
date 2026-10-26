@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { User, LogOut, Menu, X, BookOpen } from 'lucide-react';
+import { User, LogOut, Menu, X, BookOpen, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { Subject, UserProfile } from '@/lib/types';
 
@@ -23,6 +23,9 @@ export function Navbar({
 }) {
   const router = useRouter();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [isExitingDemo, setIsExitingDemo] = useState(false);
+
+  const isDemoUser = user?.email === 'demo.student@gapfinder.ai';
 
   const handleLogout = async () => {
     setIsLoggingOut(true);
@@ -32,6 +35,17 @@ export function Navbar({
       router.refresh();
     } catch {
       setIsLoggingOut(false);
+    }
+  };
+
+  const handleExitDemo = async () => {
+    setIsExitingDemo(true);
+    try {
+      await fetch('/api/auth/demo', { method: 'DELETE' });
+      router.push('/dashboard');
+      router.refresh();
+    } catch {
+      setIsExitingDemo(false);
     }
   };
 
@@ -73,7 +87,13 @@ export function Navbar({
       {/* User Actions */}
       <div className="flex items-center gap-3">
         {user ? (
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
+            {isDemoUser && (
+              <span className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-100 text-amber-900 border border-amber-300 dark:bg-amber-950 dark:text-amber-200 dark:border-amber-800">
+                <Sparkles className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                Demo Mode (CS 401)
+              </span>
+            )}
             <div className="hidden sm:flex flex-col text-right">
               <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
                 {user.fullName || user.email}
@@ -83,6 +103,18 @@ export function Navbar({
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300 font-semibold text-xs border border-indigo-200">
               <User className="h-4 w-4" />
             </div>
+            {isDemoUser && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleExitDemo}
+                isLoading={isExitingDemo}
+                className="text-xs border-amber-300 text-amber-800 hover:bg-amber-50 dark:border-amber-750 dark:text-amber-200 dark:hover:bg-amber-950"
+                title="Exit Demo Mode and return to your account"
+              >
+                Exit Demo
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"

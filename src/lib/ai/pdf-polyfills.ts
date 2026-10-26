@@ -33,15 +33,46 @@ if (typeof globalThis.DOMMatrix === 'undefined') {
       }
     }
 
+    scaleSelf(sx = 1, sy = sx) {
+      this.a *= sx;
+      this.b *= sx;
+      this.c *= sy;
+      this.d *= sy;
+      this.m11 = this.a;
+      this.m12 = this.b;
+      this.m21 = this.c;
+      this.m22 = this.d;
+      this.isIdentity = false;
+      return this;
+    }
+    translateSelf(tx = 0, ty = 0) {
+      this.e += this.a * tx + this.c * ty;
+      this.f += this.b * tx + this.d * ty;
+      this.m41 = this.e;
+      this.m42 = this.f;
+      this.isIdentity = false;
+      return this;
+    }
+    rotateSelf() { return this; }
+    multiplySelf() { return this; }
+    preMultiplySelf() { return this; }
+    invertSelf() { return this; }
+    setMatrixValue() { return this; }
     inverse() { return new (globalThis as any).DOMMatrix(); }
     multiply() { return new (globalThis as any).DOMMatrix(); }
-    translate() { return new (globalThis as any).DOMMatrix(); }
-    scale() { return new (globalThis as any).DOMMatrix(); }
+    translate(tx = 0, ty = 0) {
+      const copy = new (globalThis as any).DOMMatrix([this.a, this.b, this.c, this.d, this.e, this.f]);
+      return copy.translateSelf(tx, ty);
+    }
+    scale(sx = 1, sy = sx) {
+      const copy = new (globalThis as any).DOMMatrix([this.a, this.b, this.c, this.d, this.e, this.f]);
+      return copy.scaleSelf(sx, sy);
+    }
     rotate() { return new (globalThis as any).DOMMatrix(); }
     transformPoint(p: any) { return p || { x: 0, y: 0, z: 0, w: 1 }; }
     toFloat32Array() { return new Float32Array(16); }
     toFloat64Array() { return new Float64Array(16); }
-    toString() { return 'matrix(1,0,0,1,0,0)'; }
+    toString() { return `matrix(${this.a},${this.b},${this.c},${this.d},${this.e},${this.f})`; }
   } as any;
 }
 

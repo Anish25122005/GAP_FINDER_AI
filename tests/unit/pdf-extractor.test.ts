@@ -69,4 +69,25 @@ describe('PDF and Text Extractor', () => {
     const emptyPdf = '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/MediaBox[0 0 300 144]/Parent 2 0 R/Resources<<>>>>endobj\nxref\n0 4\n0000000000 65535 f\n0000000010 00000 n\n0000000053 00000 n\n0000000102 00000 n\ntrailer<</Size 4/Root 1 0 R>>\nstartxref\n178\n%%EOF';
     await expect(extractTextFromPdf(Buffer.from(emptyPdf))).rejects.toThrow('contains little to no extractable text');
   });
+
+  it('registers in-memory pdfjsWorker with WorkerMessageHandler to avoid missing module errors', () => {
+    expect((globalThis as any).pdfjsWorker).toBeDefined();
+    expect(typeof (globalThis as any).pdfjsWorker?.WorkerMessageHandler).toBe('function');
+  });
+
+  it('provides scaleSelf and translateSelf on DOMMatrix polyfill', () => {
+    expect(typeof globalThis.DOMMatrix).toBe('function');
+    const matrix = new (globalThis as any).DOMMatrix();
+    expect(typeof matrix.scaleSelf).toBe('function');
+    expect(typeof matrix.translateSelf).toBe('function');
+
+    const scaled = matrix.scaleSelf(2, 3);
+    expect(scaled.a).toBe(2);
+    expect(scaled.d).toBe(3);
+
+    const translated = matrix.translateSelf(10, 20);
+    expect(translated.e).toBe(20);
+    expect(translated.f).toBe(60);
+  });
 });
+
