@@ -272,20 +272,36 @@ class Repository {
   async saveTopics(
     userId: string,
     subjectId: string,
-    topics: (Omit<Topic, 'id' | 'userId' | 'createdAt' | 'subjectId'> & { subjectId?: string })[]
+    topics: (Omit<Topic, 'id' | 'userId' | 'createdAt' | 'subjectId'> & { subjectId?: string; _tempId?: string })[]
   ): Promise<Topic[]> {
     const store = this.loadStore();
     // Remove existing topics for subject if replacing
     store.topics = store.topics.filter((t) => !(t.userId === userId && t.subjectId === subjectId));
 
-    const saved: Topic[] = topics.map((t, idx) => ({
-      ...t,
-      id: crypto.randomUUID(),
-      userId,
-      subjectId: t.subjectId || subjectId,
-      orderIndex: t.orderIndex ?? idx,
-      createdAt: new Date().toISOString(),
-    }));
+    // Build a map from _tempId to real UUID so parent-child references can be resolved
+    const tempIdToRealId = new Map<string, string>();
+    const saved: Topic[] = topics.map((t, idx) => {
+      const realId = crypto.randomUUID();
+      if ((t as any)._tempId) {
+        tempIdToRealId.set((t as any)._tempId, realId);
+      }
+      const { _tempId, ...rest } = t as any;
+      return {
+        ...rest,
+        id: realId,
+        userId,
+        subjectId: rest.subjectId || subjectId,
+        orderIndex: rest.orderIndex ?? idx,
+        createdAt: new Date().toISOString(),
+      };
+    });
+
+    // Resolve parentId references: replace temp IDs with real UUIDs
+    for (const topic of saved) {
+      if (topic.parentId && tempIdToRealId.has(topic.parentId)) {
+        topic.parentId = tempIdToRealId.get(topic.parentId)!;
+      }
+    }
 
     store.topics.push(...saved);
     this.saveStore();
@@ -371,8 +387,35 @@ class Repository {
     const store = this.loadStore();
     const idx = store.documents.findIndex((d) => d.id === id && d.userId === userId);
     if (idx === -1) return false;
+
+    // 1. Identify chunk IDs belonging to this document
+    const deletedChunkIds = new Set(
+      store.chunks.filter((c) => c.documentId === id && c.userId === userId).map((c) => c.id)
+    );
+
+    // 2. Remove document record
     store.documents.splice(idx, 1);
+
+    // 3. Remove chunks
     store.chunks = store.chunks.filter((c) => c.documentId !== id);
+
+    // 4. Clean up topicChunkMappings referencing deleted chunks
+    store.topicChunkMappings = store.topicChunkMappings.filter(
+      (m) => !deletedChunkIds.has(m.chunkId)
+    );
+
+    // 5. Delete from Supabase if configured
+    if (this.isSupabaseConfigured()) {
+      try {
+        const supabase = await createServerSupabaseClient();
+        if (supabase) {
+          await supabase.from('documents').delete().eq('id', id).eq('user_id', userId);
+        }
+      } catch (err) {
+        console.warn('Failed to delete document from Supabase:', err);
+      }
+    }
+
     this.saveStore();
     return true;
   }

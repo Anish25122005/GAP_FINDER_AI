@@ -151,10 +151,15 @@ export default function DocumentUploadPage() {
                 <strong>{successResult.chunkCount} vector chunks</strong> with embeddings and mapped to your syllabus topics.
               </p>
 
-              <div className="flex items-center justify-center gap-3 pt-4">
+              <div className="flex items-center justify-center gap-3 pt-4 flex-wrap">
                 <Button variant="outline" size="sm" onClick={() => { setSuccessResult(null); setFile(null); setTitle(''); }}>
                   Upload Another File
                 </Button>
+                <Link href="/documents">
+                  <Button variant="outline" size="sm">
+                    View in Library
+                  </Button>
+                </Link>
                 <Link href="/quiz/new">
                   <Button variant="primary" size="sm">
                     Generate Diagnostic Quiz

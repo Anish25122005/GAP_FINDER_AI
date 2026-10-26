@@ -3,7 +3,10 @@ import { z } from 'zod';
 import { requireAuth } from '@/lib/auth/require-auth';
 import { repository } from '@/lib/db/repository';
 
+import { mapChunksToTopics } from '@/lib/ai/topic-mapper';
+
 const TopicSchema = z.object({
+  _tempId: z.string().optional(),
   name: z.string().min(1),
   code: z.string().optional(),
   level: z.number().int().min(1).max(3),
@@ -53,6 +56,17 @@ export async function POST(
     }
 
     const saved = await repository.saveTopics(auth.user.id, id, parsed.data.topics);
+
+    // If documents were already uploaded for this subject, map chunks to the new topics
+    try {
+      const subjectChunks = await repository.getChunksBySubjectId(auth.user.id, id);
+      if (subjectChunks.length > 0 && saved.length > 0) {
+        await mapChunksToTopics(saved, subjectChunks, 0.25);
+      }
+    } catch (mapErr) {
+      console.warn('Failed to auto-map existing chunks to new topics:', mapErr);
+    }
+
     return NextResponse.json({ topics: saved }, { status: 201 });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });

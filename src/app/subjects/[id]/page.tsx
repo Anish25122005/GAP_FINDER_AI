@@ -31,6 +31,7 @@ function SubjectDetailContent() {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [subject, setSubject] = useState<Subject | null>(null);
   const [topics, setTopics] = useState<Topic[]>([]);
+  const [objectives, setObjectives] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   // Syllabus parsing state
@@ -85,6 +86,10 @@ function SubjectDetailContent() {
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to parse syllabus');
+
+      if (data.objectives && data.objectives.length > 0) {
+        setObjectives(data.objectives);
+      }
 
       // Save parsed topics to subject
       const saveRes = await fetch(`/api/subjects/${subjectId}/topics`, {
@@ -322,10 +327,24 @@ function SubjectDetailContent() {
               <span>Units &gt; Topics &gt; Subtopics</span>
             </div>
 
+            {objectives.length > 0 && (
+              <Card className="border-indigo-100 bg-indigo-50/40 dark:border-indigo-950 dark:bg-indigo-950/20">
+                <CardContent className="p-4 space-y-1">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-400">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Course Objectives</span>
+                  </div>
+                  <p className="text-xs sm:text-sm text-slate-700 dark:text-slate-300">
+                    {objectives.join(' ')}
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+
             {/* Render units if present */}
             {units.length > 0 ? (
               units.map((unit) => {
-                const childTopics = topics.filter((t) => t.level === 2);
+                const childTopics = topics.filter((t) => t.parentId === unit.id && t.level !== 1);
                 return (
                   <Card key={unit.id} className="overflow-hidden border-slate-200/90 dark:border-slate-800">
                     <div className="bg-slate-50 dark:bg-slate-800/60 p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
@@ -347,34 +366,54 @@ function SubjectDetailContent() {
                     </div>
 
                     <CardContent className="p-4 space-y-3">
-                      {childTopics.map((topic) => (
-                        <div
-                          key={topic.id}
-                          className="flex items-center justify-between pl-4 pr-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 hover:border-slate-200"
-                        >
-                          <div className="flex items-center gap-2">
-                            <span className="text-slate-400 text-xs">•</span>
-                            <span className="font-medium text-xs sm:text-sm text-slate-800 dark:text-slate-200">
-                              {topic.name}
-                            </span>
-                          </div>
+                      {childTopics.map((topic) => {
+                        const subtopics = topics.filter((t) => t.parentId === topic.id);
+                        return (
+                          <div
+                            key={topic.id}
+                            className="rounded-lg bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 hover:border-slate-200 transition-colors"
+                          >
+                            <div className="flex items-center justify-between pl-4 pr-3 py-2.5">
+                              <div className="flex items-center gap-2">
+                                <span className="text-slate-400 text-xs">•</span>
+                                <span className="font-medium text-xs sm:text-sm text-slate-800 dark:text-slate-200">
+                                  {topic.name}
+                                </span>
+                              </div>
 
-                          <div className="flex items-center gap-2">
-                            <Link href={`/quiz/new?subjectId=${subjectId}&topicId=${topic.id}`}>
-                              <Button variant="ghost" size="sm" className="text-xs h-7 px-2">
-                                Diagnostic
-                              </Button>
-                            </Link>
-                            <button
-                              onClick={() => handleDeleteTopic(topic.id)}
-                              className="text-slate-400 hover:text-rose-600 p-1"
-                              title="Delete Topic"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                              <div className="flex items-center gap-2">
+                                <Link href={`/quiz/new?subjectId=${subjectId}&topicId=${topic.id}`}>
+                                  <Button variant="ghost" size="sm" className="text-xs h-7 px-2">
+                                    Diagnostic
+                                  </Button>
+                                </Link>
+                                <button
+                                  onClick={() => handleDeleteTopic(topic.id)}
+                                  className="text-slate-400 hover:text-rose-600 p-1"
+                                  title="Delete Topic"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+
+                            {subtopics.length > 0 && (
+                              <div className="px-4 pb-2.5 pt-0.5 border-t border-slate-50 dark:border-slate-800/60">
+                                <div className="flex flex-wrap gap-1.5 pt-1.5">
+                                  {subtopics.map((sub) => (
+                                    <span
+                                      key={sub.id}
+                                      className="inline-flex items-center text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
+                                    >
+                                      {sub.name}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </CardContent>
                   </Card>
                 );

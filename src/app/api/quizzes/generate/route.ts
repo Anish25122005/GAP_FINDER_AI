@@ -53,7 +53,15 @@ export async function POST(req: NextRequest) {
       const mappings = await repository.getMappingsForTopic(topic.id);
       let chunks = mappings.map((m) => m.chunk);
 
-      // If no explicit mappings, fallback to subject chunks
+      // If no explicit mappings, check if parent topic/unit has mapped chunks
+      if (chunks.length === 0 && topic.parentId) {
+        const parentMappings = await repository.getMappingsForTopic(topic.parentId);
+        if (parentMappings.length > 0) {
+          chunks = parentMappings.map((m) => m.chunk);
+        }
+      }
+
+      // If still no mappings, fallback to subject chunks
       if (chunks.length === 0) {
         chunks = await repository.getChunksBySubjectId(auth.user.id, subjectId);
       }

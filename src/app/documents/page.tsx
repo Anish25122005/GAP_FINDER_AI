@@ -18,6 +18,8 @@ export default function DocumentsPage() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [selectedSubject, setSelectedSubject] = useState<string>('all');
   const [isLoading, setIsLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     async function init() {
@@ -53,16 +55,28 @@ export default function DocumentsPage() {
     init();
   }, [router]);
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this document and all its indexed vector chunks?')) return;
+  const handleDelete = async (id: string, title?: string) => {
+    if (deletingId) return; // Prevent duplicate deletion requests
+    const docName = title || 'this document';
+    if (!confirm(`Are you sure you want to remove "${docName}"? This will delete the document record, all its indexed vector chunks, and topic associations.`)) {
+      return;
+    }
+
+    setDeletingId(id);
+    setDeleteError(null);
 
     try {
       const res = await fetch(`/api/documents/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        setDocuments(documents.filter((d) => d.id !== id));
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to delete document from library');
       }
-    } catch {
-      alert('Failed to delete document');
+      // Update UI state immediately without requiring page refresh
+      setDocuments((prev) => prev.filter((d) => d.id !== id));
+    } catch (err: any) {
+      setDeleteError(err.message || 'Failed to delete document. Please try again.');
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -91,6 +105,13 @@ export default function DocumentsPage() {
             </Button>
           </Link>
         </div>
+
+        {deleteError && (
+          <div className="flex items-center gap-2 p-3 rounded-lg bg-rose-50 text-rose-800 text-xs border border-rose-200 dark:bg-rose-950/50 dark:border-rose-900 dark:text-rose-300">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{deleteError}</span>
+          </div>
+        )}
 
         {/* Filters */}
         {subjects.length > 0 && (
@@ -180,19 +201,37 @@ export default function DocumentsPage() {
                             </span>
                           )}
                           {doc.status === 'failed' && (
-                            <span className="inline-flex items-center gap-1 text-rose-700 text-xs font-semibold">
-                              <AlertCircle className="w-3.5 h-3.5" /> Error
-                            </span>
+                            <div>
+                              <span className="inline-flex items-center gap-1 text-rose-700 dark:text-rose-400 text-xs font-semibold">
+                                <AlertCircle className="w-3.5 h-3.5" /> Failed
+                              </span>
+                              {doc.errorMessage && (
+                                <p className="text-[11px] text-rose-600 dark:text-rose-400 mt-0.5 max-w-xs truncate" title={doc.errorMessage}>
+                                  {doc.errorMessage}
+                                </p>
+                              )}
+                            </div>
                           )}
                         </td>
                         <td className="p-4 text-slate-500">{formatDate(doc.createdAt)}</td>
                         <td className="p-4 text-right">
                           <button
-                            onClick={() => handleDelete(doc.id)}
-                            className="text-slate-400 hover:text-rose-600 p-1.5 rounded transition-colors"
-                            title="Delete Document"
+                            onClick={() => handleDelete(doc.id, doc.title)}
+                            disabled={deletingId === doc.id}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/50 dark:text-rose-400 rounded-md transition-colors disabled:opacity-50"
+                            title="Remove Document from Library"
                           >
-                            <Trash2 className="w-4 h-4" />
+                            {deletingId === doc.id ? (
+                              <>
+                                <Clock className="w-3.5 h-3.5 animate-spin" />
+                                <span>Removing...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>Remove</span>
+                              </>
+                            )}
                           </button>
                         </td>
                       </tr>

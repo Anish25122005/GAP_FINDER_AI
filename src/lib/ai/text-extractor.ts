@@ -1,4 +1,41 @@
 import { PDFParse } from 'pdf-parse';
+import path from 'path';
+import { pathToFileURL } from 'url';
+
+let workerConfigured = false;
+
+/**
+ * Ensures PDF.js uses the local legacy worker in Node.js/Next.js server environments.
+ */
+async function configurePdfWorker() {
+  if (workerConfigured) return;
+  try {
+    const workerPath = path.resolve(process.cwd(), 'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs');
+    const workerUrl = pathToFileURL(workerPath).href;
+
+    try {
+      const workerModule = await import(workerUrl);
+      if (workerModule && (workerModule.WorkerMessageHandler || (workerModule as any).default?.WorkerMessageHandler)) {
+        (globalThis as any).pdfjsWorker = workerModule;
+      }
+    } catch {
+      // ignore
+    }
+
+    try {
+      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+      if (pdfjs && pdfjs.GlobalWorkerOptions) {
+        pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+      }
+    } catch {
+      // ignore
+    }
+
+    workerConfigured = true;
+  } catch {
+    workerConfigured = true;
+  }
+}
 
 export interface ExtractedPage {
   pageNumber: number;
@@ -48,6 +85,7 @@ export function normalizeExtractedText(text: string): string {
  * Extracts readable text from a PDF Buffer.
  */
 export async function extractTextFromPdf(buffer: Buffer): Promise<ExtractionResult> {
+  await configurePdfWorker();
   const parser = new PDFParse({ data: buffer });
   try {
     const textResult = await parser.getText();
@@ -77,6 +115,12 @@ export async function extractTextFromPdf(buffer: Buffer): Promise<ExtractionResu
       metadata: {},
     };
   } catch (error: any) {
+    if (error.name === 'PasswordException' || /password|encrypt/i.test(error.message || '')) {
+      throw new Error('This PDF is encrypted or password-protected. Please upload an unencrypted document.');
+    }
+    if (error.name === 'InvalidPDFException' || /invalid pdf|corrupt/i.test(error.message || '')) {
+      throw new Error('This PDF file is corrupted or has an invalid structure.');
+    }
     if (error.message?.includes('little to no extractable text')) {
       throw error;
     }

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAuth } from '@/lib/auth/require-auth';
-import { parseSyllabus, flattenTopicTree } from '@/lib/ai/syllabus-parser';
+import { parseSyllabus, parseSyllabusWithMetadata, flattenTopicTree } from '@/lib/ai/syllabus-parser';
 import { extractTextFromPdf, extractTextFromTxt } from '@/lib/ai/text-extractor';
 
 export async function POST(req: NextRequest) {
@@ -43,11 +43,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const units = await parseSyllabus(syllabusText);
+    const { units, objectives } = await parseSyllabusWithMetadata(syllabusText);
     const flattened = flattenTopicTree(units, subjectId, auth.user.id);
 
     return NextResponse.json({
       units,
+      objectives,
       flattened,
       extractedCharacterCount: syllabusText.length,
     });
