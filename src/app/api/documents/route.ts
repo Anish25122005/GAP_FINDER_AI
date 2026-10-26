@@ -25,45 +25,83 @@ export async function POST(req: NextRequest) {
   if (auth.errorResponse) return auth.errorResponse;
 
   try {
-    const formData = await req.formData();
-    const file = formData.get('file') as File | null;
-    const subjectId = (formData.get('subjectId') as string) || null;
-    const title = (formData.get('title') as string) || file?.name || 'Untitled Document';
+    const contentType = req.headers.get('content-type') || '';
+    let subjectId: string | null = null;
+    let title = 'Untitled Document';
+    let filename = 'document.txt';
+    let fileType: 'pdf' | 'txt' = 'txt';
+    let fileSize = 0;
+    let extraction: any = null;
 
-    if (!file) {
-      return NextResponse.json({ error: 'No file provided for upload.' }, { status: 400 });
-    }
-
-    if (file.size > MAX_FILE_SIZE) {
-      return NextResponse.json(
-        { error: `File size exceeds the 15MB limit. Uploaded size: ${(file.size / 1024 / 1024).toFixed(1)}MB.` },
-        { status: 400 }
-      );
-    }
-
-    const filename = file.name;
-    const isPdf = filename.toLowerCase().endsWith('.pdf');
-    const isTxt = filename.toLowerCase().endsWith('.txt') || file.type.includes('text');
-
-    if (!isPdf && !isTxt) {
-      return NextResponse.json(
-        { error: 'Unsupported file format. Please upload a PDF (.pdf) or Plain Text (.txt) file.' },
-        { status: 400 }
-      );
-    }
-
-    const buffer = Buffer.from(await file.arrayBuffer());
-
-    // 1. Extract Text
-    let extraction;
-    try {
-      if (isPdf) {
-        extraction = await extractTextFromPdf(buffer);
-      } else {
-        extraction = extractTextFromTxt(buffer);
+    if (contentType.includes('application/json')) {
+      let body: any = {};
+      try {
+        const raw = await req.text();
+        body = raw && raw.trim() ? JSON.parse(raw) : {};
+      } catch {
+        return NextResponse.json({ error: 'Invalid JSON request payload' }, { status: 400 });
       }
-    } catch (extErr: any) {
-      return NextResponse.json({ error: extErr.message || 'Failed to extract text from document.' }, { status: 400 });
+
+      const text = body.text || body.content || '';
+      if (!text || text.trim().length < 10) {
+        return NextResponse.json(
+          { error: 'Study material text content is too short. Please provide at least 10 characters.' },
+          { status: 400 }
+        );
+      }
+
+      subjectId = body.subjectId || null;
+      title = body.title || 'Study Material Notes';
+      filename = `${title.toLowerCase().replace(/[^a-z0-9]/gi, '_')}.txt`;
+      fileType = 'txt';
+      fileSize = Buffer.byteLength(text, 'utf-8');
+      extraction = {
+        text,
+        pages: [{ pageNumber: 1, text, tokenEstimate: Math.ceil(text.length / 4) }],
+        totalTokensEstimate: Math.ceil(text.length / 4),
+      };
+    } else {
+      const formData = await req.formData();
+      const file = formData.get('file') as File | null;
+      subjectId = (formData.get('subjectId') as string) || null;
+      title = (formData.get('title') as string) || file?.name || 'Untitled Document';
+
+      if (!file) {
+        return NextResponse.json({ error: 'No file provided for upload.' }, { status: 400 });
+      }
+
+      if (file.size > MAX_FILE_SIZE) {
+        return NextResponse.json(
+          { error: `File size exceeds the 15MB limit. Uploaded size: ${(file.size / 1024 / 1024).toFixed(1)}MB.` },
+          { status: 400 }
+        );
+      }
+
+      filename = file.name;
+      const isPdf = filename.toLowerCase().endsWith('.pdf');
+      const isTxt = filename.toLowerCase().endsWith('.txt') || file.type.includes('text');
+
+      if (!isPdf && !isTxt) {
+        return NextResponse.json(
+          { error: 'Unsupported file format. Please upload a PDF (.pdf) or Plain Text (.txt) file.' },
+          { status: 400 }
+        );
+      }
+
+      fileType = isPdf ? 'pdf' : 'txt';
+      fileSize = file.size;
+      const buffer = Buffer.from(await file.arrayBuffer());
+
+      // 1. Extract Text
+      try {
+        if (isPdf) {
+          extraction = await extractTextFromPdf(buffer);
+        } else {
+          extraction = extractTextFromTxt(buffer);
+        }
+      } catch (extErr: any) {
+        return NextResponse.json({ error: extErr.message || 'Failed to extract text from document.' }, { status: 400 });
+      }
     }
 
     // 2. Create Document Record
@@ -73,8 +111,8 @@ export async function POST(req: NextRequest) {
         subjectId,
         title,
         filename,
-        fileType: isPdf ? 'pdf' : 'txt',
-        fileSize: file.size,
+        fileType,
+        fileSize,
         status: 'processing',
       });
       createdDocId = docRecord.id;

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { requireAuth } from '@/lib/auth/require-auth';
 import { parseSyllabus, parseSyllabusWithMetadata, flattenTopicTree } from '@/lib/ai/syllabus-parser';
 import { extractTextFromPdf, extractTextFromTxt } from '@/lib/ai/text-extractor';
+import { repository } from '@/lib/db/repository';
 
 export async function POST(req: NextRequest) {
   const auth = await requireAuth();
@@ -65,6 +66,20 @@ export async function POST(req: NextRequest) {
 
     const { units, objectives } = await parseSyllabusWithMetadata(syllabusText);
     const flattened = flattenTopicTree(units, subjectId, auth.user.id);
+
+    if (subjectId) {
+      try {
+        const uploadFilename = contentType.includes('multipart/form-data')
+          ? 'uploaded_syllabus'
+          : 'pasted_syllabus.txt';
+        await repository.saveSyllabusDocument(auth.user.id, subjectId, {
+          filename: uploadFilename,
+          rawText: syllabusText,
+        });
+      } catch (saveErr) {
+        console.warn('Failed to save syllabus document to repository:', saveErr);
+      }
+    }
 
     return NextResponse.json(
       {

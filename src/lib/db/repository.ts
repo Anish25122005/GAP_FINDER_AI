@@ -216,33 +216,6 @@ class Repository {
     userId: string,
     data: { name: string; code?: string; description?: string }
   ): Promise<Subject> {
-    if (this.isSupabaseConfigured()) {
-      const supabase = await createServerSupabaseClient();
-      if (supabase) {
-        const { data: result, error } = await supabase
-          .from('subjects')
-          .insert({
-            user_id: userId,
-            name: data.name,
-            code: data.code,
-            description: data.description,
-          })
-          .select()
-          .single();
-        if (!error && result) {
-          return {
-            id: result.id,
-            userId: result.user_id,
-            name: result.name,
-            code: result.code,
-            description: result.description,
-            createdAt: result.created_at,
-            updatedAt: result.updated_at,
-          };
-        }
-      }
-    }
-
     const store = this.loadStore();
     const subject: Subject = {
       id: crypto.randomUUID(),
@@ -255,10 +228,59 @@ class Repository {
     };
     store.subjects.push(subject);
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          const { data: result, error } = await supabase
+            .from('subjects')
+            .insert({
+              id: subject.id,
+              user_id: userId,
+              name: data.name,
+              code: data.code || null,
+              description: data.description || null,
+            })
+            .select()
+            .single();
+          if (!error && result) {
+            subject.id = result.id;
+            subject.createdAt = result.created_at;
+            subject.updatedAt = result.updated_at;
+            this.saveStore();
+          }
+        } catch (err) {
+          console.warn('Failed to insert subject into Supabase:', err);
+        }
+      }
+    }
+
     return subject;
   }
 
   async deleteSubject(userId: string, id: string): Promise<boolean> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        const { error } = await supabase
+          .from('subjects')
+          .delete()
+          .eq('id', id)
+          .eq('user_id', userId);
+        if (!error) {
+          // Cascade handles dependent rows in Supabase
+          const store = this.loadStore();
+          store.subjects = store.subjects.filter((s) => !(s.id === id && s.userId === userId));
+          store.topics = store.topics.filter((t) => t.subjectId !== id);
+          store.documents = store.documents.filter((d) => d.subjectId !== id);
+          store.chunks = store.chunks.filter((c) => c.subjectId !== id);
+          this.saveStore();
+          return true;
+        }
+      }
+    }
+
     const store = this.loadStore();
     const idx = store.subjects.findIndex((s) => s.id === id && s.userId === userId);
     if (idx === -1) return false;
@@ -275,6 +297,33 @@ class Repository {
   // --------------------------------------------------------------------------
 
   async getTopics(userId: string, subjectId: string): Promise<Topic[]> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        const { data, error } = await supabase
+          .from('topics')
+          .select('*')
+          .eq('user_id', userId)
+          .eq('subject_id', subjectId)
+          .order('order_index', { ascending: true });
+        if (!error && data) {
+          return data.map((d: any) => ({
+            id: d.id,
+            subjectId: d.subject_id,
+            userId: d.user_id,
+            parentId: d.parent_id,
+            name: d.name,
+            code: d.code,
+            level: d.level,
+            description: d.description,
+            weight: parseFloat(d.weight) || 1.0,
+            orderIndex: d.order_index,
+            createdAt: d.created_at,
+          }));
+        }
+      }
+    }
+
     const store = this.loadStore();
     return store.topics
       .filter((t) => t.userId === userId && t.subjectId === subjectId)
@@ -282,6 +331,33 @@ class Repository {
   }
 
   async getTopicById(userId: string, id: string): Promise<Topic | null> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        const { data, error } = await supabase
+          .from('topics')
+          .select('*')
+          .eq('id', id)
+          .eq('user_id', userId)
+          .single();
+        if (!error && data) {
+          return {
+            id: data.id,
+            subjectId: data.subject_id,
+            userId: data.user_id,
+            parentId: data.parent_id,
+            name: data.name,
+            code: data.code,
+            level: data.level,
+            description: data.description,
+            weight: parseFloat(data.weight) || 1.0,
+            orderIndex: data.order_index,
+            createdAt: data.created_at,
+          };
+        }
+      }
+    }
+
     const store = this.loadStore();
     return store.topics.find((t) => t.id === id && t.userId === userId) || null;
   }
@@ -322,6 +398,62 @@ class Repository {
 
     store.topics.push(...saved);
     this.saveStore();
+
+    // Persist to Supabase
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          // Delete existing topics for this subject in Supabase
+          await supabase
+            .from('topics')
+            .delete()
+            .eq('user_id', userId)
+            .eq('subject_id', subjectId);
+
+          // Insert new topics — must respect parent FK: insert parents (null parentId) first
+          const withoutParent = saved.filter((t) => !t.parentId);
+          const withParent = saved.filter((t) => t.parentId);
+
+          if (withoutParent.length > 0) {
+            await supabase.from('topics').insert(
+              withoutParent.map((t) => ({
+                id: t.id,
+                subject_id: t.subjectId,
+                user_id: t.userId,
+                parent_id: null,
+                name: t.name,
+                code: t.code || null,
+                level: t.level,
+                description: t.description || null,
+                weight: t.weight,
+                order_index: t.orderIndex,
+              }))
+            );
+          }
+
+          if (withParent.length > 0) {
+            await supabase.from('topics').insert(
+              withParent.map((t) => ({
+                id: t.id,
+                subject_id: t.subjectId,
+                user_id: t.userId,
+                parent_id: t.parentId,
+                name: t.name,
+                code: t.code || null,
+                level: t.level,
+                description: t.description || null,
+                weight: t.weight,
+                order_index: t.orderIndex,
+              }))
+            );
+          }
+        } catch (err) {
+          console.warn('Failed to save topics to Supabase:', err);
+        }
+      }
+    }
+
     return saved;
   }
 
@@ -335,6 +467,29 @@ class Repository {
     };
     store.topics.push(topic);
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          await supabase.from('topics').insert({
+            id: topic.id,
+            subject_id: topic.subjectId,
+            user_id: topic.userId,
+            parent_id: topic.parentId || null,
+            name: topic.name,
+            code: topic.code || null,
+            level: topic.level,
+            description: topic.description || null,
+            weight: topic.weight,
+            order_index: topic.orderIndex,
+          });
+        } catch (err) {
+          console.warn('Failed to insert topic into Supabase:', err);
+        }
+      }
+    }
+
     return topic;
   }
 
@@ -344,6 +499,28 @@ class Repository {
     if (!topic) return null;
     Object.assign(topic, updates);
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          const dbUpdates: any = {};
+          if (updates.name !== undefined) dbUpdates.name = updates.name;
+          if (updates.code !== undefined) dbUpdates.code = updates.code;
+          if (updates.level !== undefined) dbUpdates.level = updates.level;
+          if (updates.description !== undefined) dbUpdates.description = updates.description;
+          if (updates.weight !== undefined) dbUpdates.weight = updates.weight;
+          if (updates.orderIndex !== undefined) dbUpdates.order_index = updates.orderIndex;
+          if (updates.parentId !== undefined) dbUpdates.parent_id = updates.parentId;
+          if (Object.keys(dbUpdates).length > 0) {
+            await supabase.from('topics').update(dbUpdates).eq('id', id).eq('user_id', userId);
+          }
+        } catch (err) {
+          console.warn('Failed to update topic in Supabase:', err);
+        }
+      }
+    }
+
     return topic;
   }
 
@@ -354,6 +531,18 @@ class Repository {
     store.topics.splice(idx, 1);
     store.topicChunkMappings = store.topicChunkMappings.filter((m) => m.topicId !== id);
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          await supabase.from('topics').delete().eq('id', id).eq('user_id', userId);
+        } catch (err) {
+          console.warn('Failed to delete topic from Supabase:', err);
+        }
+      }
+    }
+
     return true;
   }
 
@@ -362,6 +551,37 @@ class Repository {
   // --------------------------------------------------------------------------
 
   async getDocuments(userId: string, subjectId?: string): Promise<DocumentRecord[]> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        let query = supabase
+          .from('documents')
+          .select('*')
+          .eq('user_id', userId);
+        if (subjectId) {
+          query = query.eq('subject_id', subjectId);
+        }
+        const { data, error } = await query.order('created_at', { ascending: false });
+        if (!error && data) {
+          return data.map((d: any) => ({
+            id: d.id,
+            userId: d.user_id,
+            subjectId: d.subject_id,
+            title: d.title,
+            filename: d.filename,
+            fileType: d.file_type,
+            fileSize: d.file_size,
+            storagePath: d.storage_path,
+            status: d.status,
+            errorMessage: d.error_message,
+            chunkCount: d.chunk_count,
+            createdAt: d.created_at,
+            updatedAt: d.updated_at,
+          }));
+        }
+      }
+    }
+
     const store = this.loadStore();
     return store.documents
       .filter((d) => d.userId === userId && (!subjectId || d.subjectId === subjectId))
@@ -369,6 +589,35 @@ class Repository {
   }
 
   async getDocumentById(userId: string, id: string): Promise<DocumentRecord | null> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        const { data, error } = await supabase
+          .from('documents')
+          .select('*')
+          .eq('id', id)
+          .eq('user_id', userId)
+          .single();
+        if (!error && data) {
+          return {
+            id: data.id,
+            userId: data.user_id,
+            subjectId: data.subject_id,
+            title: data.title,
+            filename: data.filename,
+            fileType: data.file_type,
+            fileSize: data.file_size,
+            storagePath: data.storage_path,
+            status: data.status,
+            errorMessage: data.error_message,
+            chunkCount: data.chunk_count,
+            createdAt: data.created_at,
+            updatedAt: data.updated_at,
+          };
+        }
+      }
+    }
+
     const store = this.loadStore();
     return store.documents.find((d) => d.id === id && d.userId === userId) || null;
   }
@@ -388,6 +637,30 @@ class Repository {
     };
     store.documents.push(doc);
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          await supabase.from('documents').insert({
+            id: doc.id,
+            user_id: doc.userId,
+            subject_id: doc.subjectId || null,
+            title: doc.title,
+            filename: doc.filename,
+            file_type: doc.fileType,
+            file_size: doc.fileSize,
+            storage_path: doc.storagePath || null,
+            status: doc.status,
+            error_message: doc.errorMessage || null,
+            chunk_count: doc.chunkCount,
+          });
+        } catch (err) {
+          console.warn('Failed to insert document into Supabase:', err);
+        }
+      }
+    }
+
     return doc;
   }
 
@@ -397,6 +670,23 @@ class Repository {
     if (!doc) return null;
     Object.assign(doc, updates, { updatedAt: new Date().toISOString() });
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          const dbUpdates: any = { updated_at: new Date().toISOString() };
+          if (updates.title !== undefined) dbUpdates.title = updates.title;
+          if (updates.status !== undefined) dbUpdates.status = updates.status;
+          if (updates.errorMessage !== undefined) dbUpdates.error_message = updates.errorMessage;
+          if (updates.chunkCount !== undefined) dbUpdates.chunk_count = updates.chunkCount;
+          await supabase.from('documents').update(dbUpdates).eq('id', id).eq('user_id', userId);
+        } catch (err) {
+          console.warn('Failed to update document in Supabase:', err);
+        }
+      }
+    }
+
     return doc;
   }
 
@@ -457,10 +747,82 @@ class Repository {
     }
 
     this.saveStore();
+
+    // Persist chunks to Supabase
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          // Insert chunks in batches of 50 to avoid request size limits
+          const BATCH_SIZE = 50;
+          for (let i = 0; i < saved.length; i += BATCH_SIZE) {
+            const batch = saved.slice(i, i + BATCH_SIZE);
+            await supabase.from('document_chunks').insert(
+              batch.map((c) => ({
+                id: c.id,
+                document_id: c.documentId,
+                user_id: c.userId,
+                subject_id: c.subjectId || null,
+                chunk_index: c.chunkIndex,
+                page_number: c.pageNumber || null,
+                section_title: c.sectionTitle || null,
+                content: c.content,
+                token_count: c.tokenCount || null,
+                embedding: c.embedding && c.embedding.length > 0 ? JSON.stringify(c.embedding) : null,
+              }))
+            );
+          }
+
+          // Update document chunk_count and status in Supabase
+          if (saved.length > 0) {
+            const docId = saved[0].documentId;
+            const userId = saved[0].userId;
+            const doc = store.documents.find((d) => d.id === docId);
+            if (doc) {
+              await supabase.from('documents').update({
+                chunk_count: doc.chunkCount,
+                status: 'indexed',
+                updated_at: new Date().toISOString(),
+              }).eq('id', docId).eq('user_id', userId);
+            }
+          }
+        } catch (err) {
+          console.warn('Failed to save chunks to Supabase:', err);
+        }
+      }
+    }
+
     return saved;
   }
 
   async getChunksByDocumentId(userId: string, documentId: string): Promise<DocumentChunk[]> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        const { data, error } = await supabase
+          .from('document_chunks')
+          .select('*')
+          .eq('user_id', userId)
+          .eq('document_id', documentId)
+          .order('chunk_index', { ascending: true });
+        if (!error && data) {
+          return data.map((d: any) => ({
+            id: d.id,
+            documentId: d.document_id,
+            userId: d.user_id,
+            subjectId: d.subject_id,
+            chunkIndex: d.chunk_index,
+            pageNumber: d.page_number,
+            sectionTitle: d.section_title,
+            content: d.content,
+            tokenCount: d.token_count,
+            embedding: d.embedding,
+            createdAt: d.created_at,
+          }));
+        }
+      }
+    }
+
     const store = this.loadStore();
     return store.chunks
       .filter((c) => c.userId === userId && c.documentId === documentId)
@@ -468,6 +830,32 @@ class Repository {
   }
 
   async getChunksBySubjectId(userId: string, subjectId: string): Promise<DocumentChunk[]> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        const { data, error } = await supabase
+          .from('document_chunks')
+          .select('*')
+          .eq('user_id', userId)
+          .eq('subject_id', subjectId);
+        if (!error && data) {
+          return data.map((d: any) => ({
+            id: d.id,
+            documentId: d.document_id,
+            userId: d.user_id,
+            subjectId: d.subject_id,
+            chunkIndex: d.chunk_index,
+            pageNumber: d.page_number,
+            sectionTitle: d.section_title,
+            content: d.content,
+            tokenCount: d.token_count,
+            embedding: d.embedding,
+            createdAt: d.created_at,
+          }));
+        }
+      }
+    }
+
     const store = this.loadStore();
     return store.chunks.filter((c) => c.userId === userId && c.subjectId === subjectId);
   }
@@ -580,10 +968,89 @@ class Repository {
     }
 
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          const rows = saved.map((m) => ({
+            id: m.id,
+            topic_id: m.topicId,
+            chunk_id: m.chunkId,
+            relevance_score: m.relevanceScore,
+            method: m.method,
+          }));
+          await supabase.from('topic_chunk_mappings').upsert(rows, { onConflict: 'topic_id,chunk_id' });
+        } catch (err) {
+          console.warn('Failed to save topic chunk mappings to Supabase:', err);
+        }
+      }
+    }
+
     return saved;
   }
 
   async getMappingsForTopic(topicId: string): Promise<(TopicChunkMapping & { chunk: DocumentChunk })[]> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from('topic_chunk_mappings')
+            .select(`
+              id,
+              topic_id,
+              chunk_id,
+              relevance_score,
+              method,
+              created_at,
+              document_chunks (
+                id,
+                document_id,
+                user_id,
+                subject_id,
+                chunk_index,
+                page_number,
+                section_title,
+                content,
+                token_count,
+                created_at
+              )
+            `)
+            .eq('topic_id', topicId);
+          if (!error && data && data.length > 0) {
+            return data
+              .filter((d: any) => d.document_chunks)
+              .map((d: any) => {
+                const c = d.document_chunks;
+                return {
+                  id: d.id,
+                  topicId: d.topic_id,
+                  chunkId: d.chunk_id,
+                  relevanceScore: parseFloat(d.relevance_score),
+                  method: d.method,
+                  createdAt: d.created_at,
+                  chunk: {
+                    id: c.id,
+                    documentId: c.document_id,
+                    userId: c.user_id,
+                    subjectId: c.subject_id,
+                    chunkIndex: c.chunk_index,
+                    pageNumber: c.page_number,
+                    sectionTitle: c.section_title,
+                    content: c.content,
+                    tokenCount: c.token_count,
+                    createdAt: c.created_at,
+                  },
+                };
+              });
+          }
+        } catch {
+          // fallback to local
+        }
+      }
+    }
+
     const store = this.loadStore();
     const mappings = store.topicChunkMappings.filter((m) => m.topicId === topicId);
     return mappings
@@ -641,11 +1108,78 @@ class Repository {
   }
 
   async getQuestionsByTopic(userId: string, topicId: string): Promise<GeneratedQuestion[]> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from('generated_questions')
+            .select('*')
+            .eq('user_id', userId)
+            .eq('topic_id', topicId);
+          if (!error && data && data.length > 0) {
+            return data.map((q: any) => ({
+              id: q.id,
+              userId: q.user_id,
+              subjectId: q.subject_id,
+              topicId: q.topic_id,
+              questionText: q.question_text,
+              questionType: q.question_type,
+              difficulty: q.difficulty,
+              options: q.options,
+              correctAnswer: q.correct_answer,
+              rubric: q.rubric,
+              explanation: q.explanation,
+              citationMetadata: q.citation_metadata || [],
+              isFlagged: q.is_flagged,
+              createdAt: q.created_at,
+            }));
+          }
+        } catch {
+          // fallback to local
+        }
+      }
+    }
+
     const store = this.loadStore();
     return store.questions.filter((q) => q.userId === userId && q.topicId === topicId);
   }
 
   async getQuestionById(userId: string, id: string): Promise<GeneratedQuestion | null> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from('generated_questions')
+            .select('*')
+            .eq('id', id)
+            .eq('user_id', userId)
+            .single();
+          if (!error && data) {
+            return {
+              id: data.id,
+              userId: data.user_id,
+              subjectId: data.subject_id,
+              topicId: data.topic_id,
+              questionText: data.question_text,
+              questionType: data.question_type,
+              difficulty: data.difficulty,
+              options: data.options,
+              correctAnswer: data.correct_answer,
+              rubric: data.rubric,
+              explanation: data.explanation,
+              citationMetadata: data.citation_metadata || [],
+              isFlagged: data.is_flagged,
+              createdAt: data.created_at,
+            };
+          }
+        } catch {
+          // fallback to local
+        }
+      }
+    }
+
     const store = this.loadStore();
     return store.questions.find((q) => q.id === id && q.userId === userId) || null;
   }
@@ -822,10 +1356,141 @@ class Repository {
     };
     store.quizAttempts.push(attempt);
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          await supabase.from('quiz_attempts').insert({
+            id: attempt.id,
+            quiz_id: quizId,
+            user_id: userId,
+            subject_id: subjectId,
+            status: 'in_progress',
+            total_score: 0,
+            max_score: 0,
+            percentage: 0,
+            started_at: attempt.startedAt,
+          });
+        } catch (err) {
+          console.warn('Failed to insert quiz attempt into Supabase:', err);
+        }
+      }
+    }
+
     return attempt;
   }
 
   async getAttemptById(userId: string, id: string): Promise<QuizAttempt | null> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          const { data: dbAttempt, error } = await supabase
+            .from('quiz_attempts')
+            .select('*')
+            .eq('id', id)
+            .eq('user_id', userId)
+            .single();
+
+          if (!error && dbAttempt) {
+            const { data: dbAnswers } = await supabase
+              .from('student_answers')
+              .select('*')
+              .eq('attempt_id', id)
+              .eq('user_id', userId);
+
+            const answers = dbAnswers || [];
+            const answerIds = answers.map((a: any) => a.id);
+            const questionIds = answers.map((a: any) => a.question_id);
+
+            let evals: any[] = [];
+            if (answerIds.length > 0) {
+              const { data: dbEvals } = await supabase
+                .from('answer_evaluations')
+                .select('*')
+                .in('student_answer_id', answerIds);
+              evals = dbEvals || [];
+            }
+
+            let questions: any[] = [];
+            if (questionIds.length > 0) {
+              const { data: dbQuestions } = await supabase
+                .from('generated_questions')
+                .select('*')
+                .in('id', questionIds);
+              questions = dbQuestions || [];
+            }
+
+            const evalMap = new Map(evals.map((e: any) => [e.student_answer_id, e]));
+            const qMap = new Map(questions.map((q: any) => [q.id, q]));
+
+            const answersWithDetails = answers.map((a: any) => {
+              const q = qMap.get(a.question_id);
+              const e = evalMap.get(a.id);
+              return {
+                id: a.id,
+                attemptId: a.attempt_id,
+                questionId: a.question_id,
+                userId: a.user_id,
+                selectedOption: a.selected_option,
+                shortAnswerText: a.short_answer_text,
+                createdAt: a.created_at,
+                question: q
+                  ? {
+                      id: q.id,
+                      userId: q.user_id,
+                      subjectId: q.subject_id,
+                      topicId: q.topic_id,
+                      questionText: q.question_text,
+                      questionType: q.question_type,
+                      difficulty: q.difficulty,
+                      options: q.options,
+                      correctAnswer: q.correct_answer,
+                      rubric: q.rubric,
+                      explanation: q.explanation,
+                      citationMetadata: q.citation_metadata || [],
+                      isFlagged: q.is_flagged,
+                      createdAt: q.created_at,
+                    }
+                  : undefined,
+                evaluation: e
+                  ? {
+                      id: e.id,
+                      studentAnswerId: e.student_answer_id,
+                      correctness: e.correctness,
+                      score: parseFloat(e.score),
+                      keyConceptsIdentified: e.key_concepts_identified || [],
+                      missingConcepts: e.missing_concepts || [],
+                      incorrectClaims: e.incorrect_claims || [],
+                      explanation: e.explanation,
+                      confidence: parseFloat(e.confidence),
+                      createdAt: e.created_at,
+                    }
+                  : undefined,
+              };
+            });
+
+            return {
+              id: dbAttempt.id,
+              quizId: dbAttempt.quiz_id,
+              userId: dbAttempt.user_id,
+              subjectId: dbAttempt.subject_id,
+              status: dbAttempt.status,
+              totalScore: parseFloat(dbAttempt.total_score) || 0,
+              maxScore: parseFloat(dbAttempt.max_score) || 0,
+              percentage: parseFloat(dbAttempt.percentage) || 0,
+              startedAt: dbAttempt.started_at,
+              completedAt: dbAttempt.completed_at,
+              answers: answersWithDetails,
+            };
+          }
+        } catch {
+          // fallback to local
+        }
+      }
+    }
+
     const store = this.loadStore();
     const attempt = store.quizAttempts.find((a) => a.id === id && a.userId === userId);
     if (!attempt) return null;
@@ -875,6 +1540,28 @@ class Repository {
     }
 
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          await supabase.from('student_answers').upsert(
+            {
+              id: answer.id,
+              attempt_id: attemptId,
+              question_id: questionId,
+              user_id: userId,
+              selected_option: data.selectedOption || null,
+              short_answer_text: data.shortAnswerText || null,
+            },
+            { onConflict: 'attempt_id,question_id' }
+          );
+        } catch (err) {
+          console.warn('Failed to upsert student answer in Supabase:', err);
+        }
+      }
+    }
+
     return answer;
   }
 
@@ -889,6 +1576,28 @@ class Repository {
     };
     store.evaluations.push(saved);
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          await supabase.from('answer_evaluations').insert({
+            id: saved.id,
+            student_answer_id: saved.studentAnswerId,
+            correctness: saved.correctness,
+            score: saved.score,
+            key_concepts_identified: saved.keyConceptsIdentified || [],
+            missing_concepts: saved.missingConcepts || [],
+            incorrect_claims: saved.incorrectClaims || [],
+            explanation: saved.explanation,
+            confidence: saved.confidence ?? 1.0,
+          });
+        } catch (err) {
+          console.warn('Failed to save evaluation to Supabase:', err);
+        }
+      }
+    }
+
     return saved;
   }
 
@@ -902,17 +1611,72 @@ class Repository {
     const attempt = store.quizAttempts.find((a) => a.id === attemptId && a.userId === userId);
     if (!attempt) return null;
 
+    const completedAt = new Date().toISOString();
+    const percentage = maxScore > 0 ? (totalScore / maxScore) * 100 : 0;
+
     attempt.status = 'completed';
     attempt.totalScore = totalScore;
     attempt.maxScore = maxScore;
-    attempt.percentage = maxScore > 0 ? (totalScore / maxScore) * 100 : 0;
-    attempt.completedAt = new Date().toISOString();
+    attempt.percentage = percentage;
+    attempt.completedAt = completedAt;
 
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          await supabase
+            .from('quiz_attempts')
+            .update({
+              status: 'completed',
+              total_score: totalScore,
+              max_score: maxScore,
+              percentage,
+              completed_at: completedAt,
+            })
+            .eq('id', attemptId)
+            .eq('user_id', userId);
+        } catch (err) {
+          console.warn('Failed to complete quiz attempt in Supabase:', err);
+        }
+      }
+    }
+
     return attempt;
   }
 
   async getAttemptsBySubject(userId: string, subjectId: string): Promise<QuizAttempt[]> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from('quiz_attempts')
+            .select('*')
+            .eq('user_id', userId)
+            .eq('subject_id', subjectId)
+            .order('started_at', { ascending: false });
+          if (!error && data && data.length > 0) {
+            return data.map((d: any) => ({
+              id: d.id,
+              quizId: d.quiz_id,
+              userId: d.user_id,
+              subjectId: d.subject_id,
+              status: d.status,
+              totalScore: parseFloat(d.total_score) || 0,
+              maxScore: parseFloat(d.max_score) || 0,
+              percentage: parseFloat(d.percentage) || 0,
+              startedAt: d.started_at,
+              completedAt: d.completed_at,
+            }));
+          }
+        } catch {
+          // fallback to local
+        }
+      }
+    }
+
     const store = this.loadStore();
     return store.quizAttempts
       .filter((a) => a.userId === userId && a.subjectId === subjectId)
@@ -924,6 +1688,42 @@ class Repository {
   // --------------------------------------------------------------------------
 
   async getMasterySnapshots(userId: string, subjectId: string): Promise<TopicMasterySnapshot[]> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from('topic_mastery_snapshots')
+            .select(`
+              *,
+              topics (name)
+            `)
+            .eq('user_id', userId)
+            .eq('subject_id', subjectId);
+          if (!error && data && data.length > 0) {
+            return data.map((d: any) => ({
+              id: d.id,
+              userId: d.user_id,
+              subjectId: d.subject_id,
+              topicId: d.topic_id,
+              topicName: d.topics?.name || 'Unknown Topic',
+              masteryScore: parseFloat(d.mastery_score) || 0,
+              status: d.status,
+              questionsAttempted: d.questions_attempted || 0,
+              correctCount: d.correct_count || 0,
+              incorrectCount: d.incorrect_count || 0,
+              confidence: parseFloat(d.confidence) || 0,
+              keyGaps: d.key_gaps || [],
+              lastAssessmentAt: d.last_assessment_at,
+              calculatedAt: d.calculated_at,
+            }));
+          }
+        } catch {
+          // fallback to local
+        }
+      }
+    }
+
     const store = this.loadStore();
     return store.masterySnapshots
       .filter((m) => m.userId === userId && m.subjectId === subjectId)
@@ -957,6 +1757,35 @@ class Repository {
     }
 
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          await supabase.from('topic_mastery_snapshots').upsert(
+            {
+              id: saved.id,
+              user_id: snapshot.userId,
+              subject_id: snapshot.subjectId,
+              topic_id: snapshot.topicId,
+              mastery_score: snapshot.masteryScore,
+              status: snapshot.status,
+              questions_attempted: snapshot.questionsAttempted,
+              correct_count: snapshot.correctCount,
+              incorrect_count: snapshot.incorrectCount,
+              confidence: snapshot.confidence,
+              key_gaps: snapshot.keyGaps || [],
+              last_assessment_at: snapshot.lastAssessmentAt || new Date().toISOString(),
+              calculated_at: saved.calculatedAt,
+            },
+            { onConflict: 'user_id,topic_id' }
+          );
+        } catch (err) {
+          console.warn('Failed to upsert mastery snapshot to Supabase:', err);
+        }
+      }
+    }
+
     return saved;
   }
 
@@ -965,6 +1794,65 @@ class Repository {
   // --------------------------------------------------------------------------
 
   async getActiveRevisionPlan(userId: string, subjectId: string): Promise<RevisionPlan | null> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          const { data: dbPlan, error } = await supabase
+            .from('revision_plans')
+            .select('*')
+            .eq('user_id', userId)
+            .eq('subject_id', subjectId)
+            .eq('status', 'active')
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (!error && dbPlan) {
+            const { data: dbItems } = await supabase
+              .from('revision_plan_items')
+              .select(`
+                *,
+                topics (name)
+              `)
+              .eq('revision_plan_id', dbPlan.id)
+              .order('order_index', { ascending: true });
+
+            const items = (dbItems || []).map((i: any) => ({
+              id: i.id,
+              revisionPlanId: i.revision_plan_id,
+              topicId: i.topic_id,
+              topicName: i.topics?.name || 'Unknown Topic',
+              priority: i.priority,
+              recommendedActivity: i.recommendedActivity || i.recommended_activity,
+              estimatedMinutes: i.estimatedMinutes || i.estimated_minutes,
+              targetDate: i.targetDate || i.target_date,
+              reason: i.reason,
+              status: i.status,
+              completedAt: i.completed_at,
+              orderIndex: i.order_index,
+            }));
+
+            return {
+              id: dbPlan.id,
+              userId: dbPlan.user_id,
+              subjectId: dbPlan.subject_id,
+              targetExamDate: dbPlan.target_exam_date,
+              dailyStudyMinutes: dbPlan.daily_study_minutes,
+              availableDays: dbPlan.available_days || [],
+              sessionDurationMinutes: dbPlan.session_duration_minutes,
+              status: dbPlan.status,
+              createdAt: dbPlan.created_at,
+              updatedAt: dbPlan.updated_at,
+              items,
+            };
+          }
+        } catch {
+          // fallback to local
+        }
+      }
+    }
+
     const store = this.loadStore();
     const plan = store.revisionPlans.find(
       (p) => p.userId === userId && p.subjectId === subjectId && p.status === 'active'
@@ -991,7 +1879,6 @@ class Repository {
   ): Promise<RevisionPlan> {
     const store = this.loadStore();
 
-    // Mark previous active plans as archived
     store.revisionPlans
       .filter((p) => p.userId === plan.userId && p.subjectId === plan.subjectId && p.status === 'active')
       .forEach((p) => {
@@ -1017,6 +1904,51 @@ class Repository {
     store.revisionPlanItems.push(...savedItems);
 
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          await supabase
+            .from('revision_plans')
+            .update({ status: 'archived', updated_at: new Date().toISOString() })
+            .eq('user_id', plan.userId)
+            .eq('subject_id', plan.subjectId)
+            .eq('status', 'active');
+
+          await supabase.from('revision_plans').insert({
+            id: newPlan.id,
+            user_id: plan.userId,
+            subject_id: plan.subjectId,
+            target_exam_date: plan.targetExamDate,
+            daily_study_minutes: plan.dailyStudyMinutes,
+            available_days: plan.availableDays,
+            session_duration_minutes: plan.sessionDurationMinutes,
+            status: 'active',
+          });
+
+          if (savedItems.length > 0) {
+            await supabase.from('revision_plan_items').insert(
+              savedItems.map((item) => ({
+                id: item.id,
+                revision_plan_id: newPlan.id,
+                topic_id: item.topicId,
+                priority: item.priority,
+                recommended_activity: item.recommendedActivity,
+                estimated_minutes: item.estimatedMinutes,
+                target_date: item.targetDate,
+                reason: item.reason,
+                status: item.status || 'pending',
+                order_index: item.orderIndex,
+              }))
+            );
+          }
+        } catch (err) {
+          console.warn('Failed to save revision plan to Supabase:', err);
+        }
+      }
+    }
+
     return { ...newPlan, items: savedItems };
   }
 
@@ -1032,6 +1964,24 @@ class Repository {
     item.status = status;
     item.completedAt = status === 'completed' ? new Date().toISOString() : null;
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          await supabase
+            .from('revision_plan_items')
+            .update({
+              status,
+              completed_at: item.completedAt,
+            })
+            .eq('id', itemId);
+        } catch (err) {
+          console.warn('Failed to update revision plan item in Supabase:', err);
+        }
+      }
+    }
+
     return item;
   }
 
@@ -1040,6 +1990,32 @@ class Repository {
   // --------------------------------------------------------------------------
 
   async getChatSessions(userId: string, subjectId: string): Promise<ChatSession[]> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from('chat_sessions')
+            .select('*')
+            .eq('user_id', userId)
+            .eq('subject_id', subjectId)
+            .order('created_at', { ascending: false });
+          if (!error && data && data.length > 0) {
+            return data.map((s: any) => ({
+              id: s.id,
+              userId: s.user_id,
+              subjectId: s.subject_id,
+              topicId: s.topic_id,
+              title: s.title,
+              createdAt: s.created_at,
+            }));
+          }
+        } catch {
+          // fallback to local
+        }
+      }
+    }
+
     const store = this.loadStore();
     return store.chatSessions
       .filter((s) => s.userId === userId && s.subjectId === subjectId)
@@ -1063,10 +2039,56 @@ class Repository {
     };
     store.chatSessions.push(session);
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          await supabase.from('chat_sessions').insert({
+            id: session.id,
+            user_id: userId,
+            subject_id: subjectId,
+            topic_id: topicId || null,
+            title,
+          });
+        } catch (err) {
+          console.warn('Failed to insert chat session into Supabase:', err);
+        }
+      }
+    }
+
     return session;
   }
 
   async getChatMessages(userId: string, sessionId: string): Promise<ChatMessage[]> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from('chat_messages')
+            .select('*')
+            .eq('session_id', sessionId)
+            .eq('user_id', userId)
+            .order('created_at', { ascending: true });
+          if (!error && data && data.length > 0) {
+            return data.map((m: any) => ({
+              id: m.id,
+              sessionId: m.session_id,
+              userId: m.user_id,
+              role: m.role,
+              content: m.content,
+              citations: m.citations || [],
+              isGrounded: m.is_grounded,
+              createdAt: m.created_at,
+            }));
+          }
+        } catch {
+          // fallback to local
+        }
+      }
+    }
+
     const store = this.loadStore();
     return store.chatMessages
       .filter((m) => m.sessionId === sessionId && m.userId === userId)
@@ -1088,7 +2110,111 @@ class Repository {
     };
     store.chatMessages.push(msg);
     this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          await supabase.from('chat_messages').insert({
+            id: msg.id,
+            session_id: sessionId,
+            user_id: userId,
+            role: msg.role,
+            content: msg.content,
+            citations: msg.citations || [],
+            is_grounded: msg.isGrounded !== false,
+          });
+        } catch (err) {
+          console.warn('Failed to insert chat message into Supabase:', err);
+        }
+      }
+    }
+
     return msg;
+  }
+
+  // --------------------------------------------------------------------------
+  // SYLLABUS DOCUMENTS
+  // --------------------------------------------------------------------------
+
+  async saveSyllabusDocument(
+    userId: string,
+    subjectId: string,
+    data: { filename: string; rawText: string; filePath?: string }
+  ): Promise<SyllabusDocument> {
+    const store = this.loadStore();
+    const doc: SyllabusDocument = {
+      id: crypto.randomUUID(),
+      subjectId,
+      userId,
+      filename: data.filename,
+      filePath: data.filePath,
+      rawText: data.rawText,
+      parsedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+    };
+    store.syllabusDocuments = store.syllabusDocuments.filter(
+      (d) => !(d.userId === userId && d.subjectId === subjectId)
+    );
+    store.syllabusDocuments.push(doc);
+    this.saveStore();
+
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          await supabase.from('syllabus_documents').delete().eq('user_id', userId).eq('subject_id', subjectId);
+          await supabase.from('syllabus_documents').insert({
+            id: doc.id,
+            subject_id: subjectId,
+            user_id: userId,
+            filename: data.filename,
+            file_path: data.filePath || null,
+            raw_text: data.rawText,
+            parsed_at: doc.parsedAt,
+          });
+        } catch (err) {
+          console.warn('Failed to insert syllabus document into Supabase:', err);
+        }
+      }
+    }
+
+    return doc;
+  }
+
+  async getSyllabusDocumentBySubject(userId: string, subjectId: string): Promise<SyllabusDocument | null> {
+    if (this.isSupabaseConfigured()) {
+      const supabase = await createServerSupabaseClient();
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from('syllabus_documents')
+            .select('*')
+            .eq('user_id', userId)
+            .eq('subject_id', subjectId)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (!error && data) {
+            return {
+              id: data.id,
+              subjectId: data.subject_id,
+              userId: data.user_id,
+              filename: data.filename,
+              filePath: data.file_path,
+              rawText: data.raw_text,
+              parsedAt: data.parsed_at,
+              createdAt: data.created_at,
+            };
+          }
+        } catch {
+          // fallback to local
+        }
+      }
+    }
+
+    const store = this.loadStore();
+    return store.syllabusDocuments.find((d) => d.userId === userId && d.subjectId === subjectId) || null;
   }
 }
 
